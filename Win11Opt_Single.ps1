@@ -385,53 +385,64 @@ function Get-ActivationStatus {
 }
 
 function Invoke-HWIDActivation {
-    Write-Output "Mempersiapkan aktivasi digital (HWID)..."
-    $tempDir = "$env:TEMP\Win11OptAct"
-    if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
-    $exe    = "$tempDir\gatherosstate.exe"
-    $ticket = "$tempDir\GenuineTicket.xml"
-    if (Test-Path $ticket) { Remove-Item $ticket -Force }
+    Write-Output "Mempersiapkan aktivasi digital (HWID via slmgr)..."
 
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $url = "https://github.com/massgravel/Microsoft-Activation-Scripts/raw/main/MAS/All-In-One-Version-KL/bin/gatherosstate.exe"
+    # Step 1: Refresh license status dulu sebelum aktivasi
+    Write-Output "Menyegarkan status lisensi..."
     try {
-        Write-Output "Mengunduh modul aktivasi..."
-        (New-Object System.Net.WebClient).DownloadFile($url, $exe)
-    } catch {
-        Write-Output "[ERROR] Gagal mengunduh modul: $($_.Exception.Message)"
-        return $false
-    }
-    try {
-        Write-Output "Membuat tiket lisensi..."
-        $proc = Start-Process -FilePath $exe -WorkingDirectory $tempDir -NoNewWindow -PassThru -Wait
-    } catch {
-        Write-Output "[ERROR] Gagal buat tiket: $($_.Exception.Message)"
-        return $false
-    }
-    
-    $clipSvc = "$env:ProgramData\Microsoft\Windows\ClipSVC\GenuineTicket"
-    if (-not (Test-Path $clipSvc)) { New-Item -ItemType Directory -Path $clipSvc -Force | Out-Null }
-    try {
-        Copy-Item -Path $ticket -Destination "$clipSvc\GenuineTicket.xml" -Force
-    } catch {
-        Write-Output "[ERROR] Gagal memasang tiket lisensi."
-        return $false
-    }
-    
-    try { Restart-Service -Name "ClipSVC" -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 } catch {}
+        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
+        $svc | Invoke-CimMethod -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
 
+    # Step 2: Coba ClipSVC reset untuk memicu HWID
+    Write-Output "Mereset layanan lisensi ClipSVC..."
     try {
-        Write-Output "Memverifikasi lisensi ke server Microsoft..."
-        (Get-CimInstance -ClassName SoftwareLicensingService) | Invoke-CimMethod -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue
-        Start-Process -FilePath "cscript" -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-        $final = Get-ActivationStatus
-        if ($final.IsActivated) { Write-Output "Windows berhasil diaktivasi secara permanen!"; return $true }
-        else { Write-Output "[ERROR] Aktivasi gagal. Periksa koneksi internet Anda."; return $false }
+        Stop-Service -Name "ClipSVC" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+        Start-Service -Name "ClipSVC" -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    } catch {}
+
+    # Step 3: Jalankan slmgr /ato untuk aktivasi online
+    Write-Output "Menghubungi server aktivasi Microsoft..."
+    try {
+        $p = Start-Process -FilePath "cscript" `
+            -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" `
+            -NoNewWindow -PassThru -Wait
+        Start-Sleep -Seconds 3
     } catch {
-        Write-Output "[ERROR] Gagal proses aktivasi akhir: $($_.Exception.Message)"
+        Write-Output "[ERROR] Gagal menjalankan slmgr: $($_.Exception.Message)"
         return $false
-    } finally {
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Step 4: Verifikasi hasil
+    Write-Output "Memverifikasi status aktivasi..."
+    $final = Get-ActivationStatus
+    if ($final -and $final.IsActivated) {
+        Write-Output "Windows berhasil diaktivasi!"
+        return $true
+    }
+
+    # Step 5: Jika masih belum aktif, coba via wmic SoftwareLicensingService
+    Write-Output "Mencoba metode alternatif (CIM refresh)..."
+    try {
+        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
+        $svc | Invoke-CimMethod -MethodName RefreshLicenseStatus | Out-Null
+        Start-Sleep -Seconds 2
+        $p2 = Start-Process -FilePath "cscript" `
+            -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" `
+            -NoNewWindow -PassThru -Wait
+        Start-Sleep -Seconds 3
+    } catch {}
+
+    $final2 = Get-ActivationStatus
+    if ($final2 -and $final2.IsActivated) {
+        Write-Output "Windows berhasil diaktivasi!"
+        return $true
+    } else {
+        Write-Output "[INFO] Jika Windows Anda adalah lisensi Retail/OEM asli, aktivasi mungkin membutuhkan koneksi internet langsung ke server Microsoft."
+        Write-Output "[INFO] Status akhir: $($final2.Status)"
+        return $false
     }
 }
 
