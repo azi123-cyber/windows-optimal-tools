@@ -146,12 +146,87 @@ function Optimize-PowerPlan {
             $guid = "e9a42b02-d5df-448d-aa00-03f14749eb61"
             if ((powercfg -list) -notmatch $guid) { powercfg -duplicatescheme $guid | Out-Null }
             powercfg -setactive $guid
-            Write-Output "Ultimate Performance telah aktif."
+            Write-Output "[OK] Ultimate Performance telah aktif."
             return $true
         } catch {
             Write-Output "[ERROR] Gagal set Power Plan: $($_.Exception.Message)"
             return $false
         }
+    }
+}
+
+function Invoke-SystemOptimization {
+    # Optimasi AMAN: hanya menonaktifkan servis telemetri/bloat,
+    # tidak menyentuh driver, audio, network stack, printing, Bluetooth, dll.
+    [CmdletBinding()] param()
+    process {
+        Write-Output "--- Memulai Optimasi Sistem (Mode Aman) ---"
+
+        # 1. Tweak Registry Visual untuk performa UI lebih cepat
+        Write-Output "[1/6] Menyetel preferensi visual untuk performa..."
+        try {
+            $vPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects"
+            if (-not (Test-Path $vPath)) { New-Item -Path $vPath -Force | Out-Null }
+            Set-ItemProperty -Path $vPath -Name VisualFXSetting -Value 2 -Type DWord -Force -EA SilentlyContinue
+            $advPath = "HKCU:\Control Panel\Desktop"
+            Set-ItemProperty -Path $advPath -Name DragFullWindows -Value 0 -EA SilentlyContinue
+            Set-ItemProperty -Path $advPath -Name MenuShowDelay -Value 0 -EA SilentlyContinue
+            Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name MinAnimate -Value 0 -Type String -EA SilentlyContinue
+            Write-Output "[OK] Visual tweaks diterapkan."
+        } catch { Write-Output "[WARN] Gagal set visual tweak." }
+
+        # 2. Nonaktifkan Telemetri & DiagTrack (TIDAK mempengaruhi fungsi Windows)
+        Write-Output "[2/6] Menonaktifkan Telemetri & Diagnostik..."
+        $telemetrySvcs = @("DiagTrack","dmwappushservice","WerSvc","PcaSvc")
+        foreach ($svc in $telemetrySvcs) {
+            try {
+                if (Get-Service $svc -EA SilentlyContinue) {
+                    Stop-Service $svc -Force -EA SilentlyContinue
+                    Set-Service  $svc -StartupType Disabled -EA SilentlyContinue
+                    Write-Output "  Disabled: $svc"
+                }
+            } catch {}
+        }
+        try {
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name AllowTelemetry -Value 0 -Type DWord -Force -EA SilentlyContinue
+            Write-Output "[OK] Telemetri dinonaktifkan."
+        } catch {}
+
+        # 3. Tweak Power & CPU Scheduler
+        Write-Output "[3/6] Mengoptimalkan CPU Scheduler..."
+        try {
+            # Win32PrioritySeparation = 26 (38 hex) = favor foreground apps
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name Win32PrioritySeparation -Value 38 -Type DWord -Force -EA SilentlyContinue
+            Write-Output "[OK] CPU Scheduler dioptimalkan."
+        } catch {}
+
+        # 4. Nonaktifkan Startup Delay & SysmainApp Load (TIDAK mematikan Superfetch)
+        Write-Output "[4/6] Mengurangi startup delay..."
+        try {
+            $startPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize"
+            if (-not (Test-Path $startPath)) { New-Item -Path $startPath -Force | Out-Null }
+            Set-ItemProperty -Path $startPath -Name StartupDelayInMSec -Value 0 -Type DWord -Force -EA SilentlyContinue
+            Write-Output "[OK] Startup delay dihapus."
+        } catch {}
+
+        # 5. Nonaktifkan Xbox DVR/Game Bar (tidak perlu kecuali gamer, aman dihapus)
+        Write-Output "[5/6] Menonaktifkan Xbox DVR & Game Bar..."
+        try {
+            $xboxPath = "HKCU:\Software\Microsoft\GameBar"
+            if (-not (Test-Path $xboxPath)) { New-Item -Path $xboxPath -Force | Out-Null }
+            Set-ItemProperty -Path $xboxPath -Name AllowAutoGameMode -Value 0 -Type DWord -Force -EA SilentlyContinue
+            Set-ItemProperty -Path $xboxPath -Name UseNexusForGameBarEnabled -Value 0 -Type DWord -Force -EA SilentlyContinue
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -Name AllowgameDVR -Value 0 -Type DWord -Force -EA SilentlyContinue
+            Write-Output "[OK] Xbox DVR dinonaktifkan."
+        } catch {}
+
+        # 6. Bersihkan file temp sekalian
+        Write-Output "[6/6] Membersihkan file sementara..."
+        Clear-TempFiles | Out-Null
+
+        Write-Output "--- Optimasi Sistem Selesai ---"
+        Write-Output "CATATAN: Fitur penting (Audio, Network, Printer, Bluetooth, Windows Hello) TIDAK tersentuh."
+        return $true
     }
 }
 
@@ -336,17 +411,27 @@ function Remove-Bloatware {
 # ============================
 # 6. MODULE: ACTIVATION
 # ============================
+# GVLK Keys — Home/Pro pakai HWID (slmgr /ato), Enterprise/Server pakai KMS
 $global:KeyDatabase = [ordered]@{
+    # --- Client Editions (HWID via slmgr /ato) ---
+    "Home Single"        = @{ Key = "TX9XD-98N7V-6WMQ6-BX7FG-H8Q99"; Method = "HWID" }
+    "Home N"             = @{ Key = "3KHY7-WNT83-DGQKR-F7HPR-844BM"; Method = "HWID" }
     "Home"               = @{ Key = "TX9XD-98N7V-6WMQ6-BX7FG-H8Q99"; Method = "HWID" }
-    "HomeN"              = @{ Key = "3KHY7-WNT83-DGQKR-F7HPR-844BM"; Method = "HWID" }
-    "Pro"                = @{ Key = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"; Method = "HWID" }
-    "ProN"               = @{ Key = "4CPRK-NM3K3-X6XXQ-RXX86-WXCHW"; Method = "HWID" }
-    "Pro Education"      = @{ Key = "8PTT6-NU4BB-W9X7Y-XX2DM-KY9QP"; Method = "HWID" }
-    "Pro Workstations"   = @{ Key = "DXG7C-N36C4-C4QG5-Y4V33-3V92Y"; Method = "HWID" }
-    "Education"          = @{ Key = "YNMGQ-8RYV3-4PGQ3-C8XTP-7CFBY"; Method = "HWID" }
-    "Enterprise"         = @{ Key = "XGVPP-NMH47-7TTHJ-W3FW7-8DEC8"; Method = "HWID" }
-    "EnterpriseN"        = @{ Key = "3V6Q6-NXM87-R4YHF-9H46Y-CC7QH"; Method = "HWID" }
-    "EnterpriseS"        = @{ Key = "M7XTQ-FN8P6-TTKYV-9D4CC-J46GB"; Method = "HWID" }
+    "Pro N"              = @{ Key = "MH37W-N47XK-V7XM9-C7227-GCQG9"; Method = "HWID" }
+    "Pro"                = @{ Key = "W269N-WFGWX-YVC9B-4J6C9-T83GX"; Method = "HWID" }
+    "Pro Education"      = @{ Key = "6TP4R-GNPTD-KYYHQ-7B7DP-J447Y"; Method = "KMS"  }
+    "Pro Workstation"    = @{ Key = "ZC7N4-4CPGF-K9Y4G-4QHXQ-RGPXM"; Method = "KMS"  }
+    # --- Enterprise / Volume Editions (harus KMS) ---
+    "Enterprise N"       = @{ Key = "DPH2V-TTNVB-4X9Q3-TJR4H-KHJW4"; Method = "KMS"  }
+    "Enterprise S"       = @{ Key = "FWN7H-PF93Q-4GGP8-M8RF3-MDWWW"; Method = "KMS"  }
+    "Enterprise"         = @{ Key = "NPPR9-FWDCX-D2C8J-H872K-2YT43"; Method = "KMS"  }
+    "Education N"        = @{ Key = "2WH4N-8QGBV-H22JP-CT43Q-MDWWJ"; Method = "KMS"  }
+    "Education"          = @{ Key = "NW6C2-QMPVW-D7KKK-3GKT6-VCFB2"; Method = "KMS"  }
+    "LTSC 2021"          = @{ Key = "M7XTQ-FN8P6-TTKYV-9D4CC-J462B"; Method = "KMS"  }
+    "LTSC 2019"          = @{ Key = "M7XTQ-FN8P6-TTKYV-9D4CC-J46GB"; Method = "KMS"  }
+    # --- Windows Server ---
+    "Server 2025 Standard"   = @{ Key = "TVRH6-WHNXV-R9WG3-9XRFY-MY832"; Method = "KMS" }
+    "Server 2025 Datacenter" = @{ Key = "D764K-2NDRG-47T6Q-P8T8W-YP6DF"; Method = "KMS" }
     "Server 2022 Standard"   = @{ Key = "VDYBN-27WMT-V348H-WJ7WS-T628W"; Method = "KMS" }
     "Server 2022 Datacenter" = @{ Key = "WX4NQ-8MMHS-WY399-W8X32-8QQ62"; Method = "KMS" }
     "Server 2019 Standard"   = @{ Key = "N69G4-B83C2-QT9QP-WRX9B-PFQJH"; Method = "KMS" }
@@ -354,6 +439,14 @@ $global:KeyDatabase = [ordered]@{
     "Server 2016 Standard"   = @{ Key = "WC2BQ-8NRM3-FDDYY-2BFGV-KCHQY"; Method = "KMS" }
     "Server 2016 Datacenter" = @{ Key = "CB7KF-BWN84-R7R2Y-793K2-8XDDG"; Method = "KMS" }
 }
+
+# KMS Servers dengan fallback
+$global:KmsServers = @(
+    "kms8.msguides.com",
+    "kms.digiboy.ir",
+    "kms.cangshui.net",
+    "kms9.msguides.com"
+)
 
 function Get-ActivationStatus {
     [CmdletBinding()] param()
@@ -385,93 +478,111 @@ function Get-ActivationStatus {
 }
 
 function Invoke-HWIDActivation {
-    Write-Output "Mempersiapkan aktivasi digital (HWID via slmgr)..."
+    Write-Output "Memulai aktivasi HWID (Digital License)..."
+    Write-Output "Metode ini cocok untuk Windows Home/Pro OEM & Retail."
 
-    # Step 1: Refresh license status dulu sebelum aktivasi
-    Write-Output "Menyegarkan status lisensi..."
-    try {
-        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
-        $svc | Invoke-CimMethod -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue | Out-Null
-    } catch {}
-
-    # Step 2: Coba ClipSVC reset untuk memicu HWID
+    # Reset ClipSVC agar hardware ID terbaca ulang
     Write-Output "Mereset layanan lisensi ClipSVC..."
     try {
-        Stop-Service -Name "ClipSVC" -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name "ClipSVC" -Force -EA SilentlyContinue
         Start-Sleep -Seconds 1
-        Start-Service -Name "ClipSVC" -ErrorAction SilentlyContinue
+        Start-Service -Name "ClipSVC" -EA SilentlyContinue
         Start-Sleep -Seconds 2
     } catch {}
 
-    # Step 3: Jalankan slmgr /ato untuk aktivasi online
-    Write-Output "Menghubungi server aktivasi Microsoft..."
+    # Refresh license
     try {
-        $p = Start-Process -FilePath "cscript" `
-            -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" `
-            -NoNewWindow -PassThru -Wait
+        $svc = Get-CimInstance -ClassName SoftwareLicensingService -EA Stop
+        $svc | Invoke-CimMethod -MethodName RefreshLicenseStatus -EA SilentlyContinue | Out-Null
+    } catch {}
+
+    Write-Output "Menghubungi server aktivasi Microsoft (slmgr /ato)..."
+    Write-Output "(Proses ini bisa memakan waktu 30-60 detik, harap tunggu)"
+    try {
+        Start-Process "cscript" -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" -NoNewWindow -Wait
         Start-Sleep -Seconds 3
     } catch {
         Write-Output "[ERROR] Gagal menjalankan slmgr: $($_.Exception.Message)"
         return $false
     }
 
-    # Step 4: Verifikasi hasil
     Write-Output "Memverifikasi status aktivasi..."
     $final = Get-ActivationStatus
     if ($final -and $final.IsActivated) {
-        Write-Output "Windows berhasil diaktivasi!"
-        return $true
-    }
-
-    # Step 5: Jika masih belum aktif, coba via wmic SoftwareLicensingService
-    Write-Output "Mencoba metode alternatif (CIM refresh)..."
-    try {
-        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
-        $svc | Invoke-CimMethod -MethodName RefreshLicenseStatus | Out-Null
-        Start-Sleep -Seconds 2
-        $p2 = Start-Process -FilePath "cscript" `
-            -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" `
-            -NoNewWindow -PassThru -Wait
-        Start-Sleep -Seconds 3
-    } catch {}
-
-    $final2 = Get-ActivationStatus
-    if ($final2 -and $final2.IsActivated) {
-        Write-Output "Windows berhasil diaktivasi!"
+        Write-Output "[OK] Windows berhasil diaktivasi dengan Digital License!"
         return $true
     } else {
-        Write-Output "[INFO] Jika Windows Anda adalah lisensi Retail/OEM asli, aktivasi mungkin membutuhkan koneksi internet langsung ke server Microsoft."
-        Write-Output "[INFO] Status akhir: $($final2.Status)"
+        Write-Output "[INFO] HWID tidak berhasil. Status: $($final.Status)"
+        Write-Output "[INFO] Kemungkinan: (1) Koneksi internet tidak stabil, (2) Hardware baru tidak dikenali Microsoft."
+        Write-Output "[INFO] Jika edisi Anda Enterprise/Education, gunakan tombol 'Aktivasi via KMS' di bawah."
         return $false
     }
 }
 
 function Invoke-KMSActivation {
-    Write-Output "Mempersiapkan aktivasi KMS Server..."
-    $kmsServer = "kms8.msguides.com"
+    Write-Output "Memulai aktivasi KMS..."
+    Write-Output "Metode ini untuk: Enterprise, Education, LTSC, Server, Pro Volume."
+    
+    $success = $false
+    foreach ($kmsServer in $global:KmsServers) {
+        Write-Output "Mencoba KMS Server: $kmsServer ..."
+        try {
+            $svc = Get-CimInstance -ClassName SoftwareLicensingService -EA Stop
+            $svc | Invoke-CimMethod -MethodName SetKeyManagementServiceMachine -Arguments @{Name=$kmsServer} -EA Stop | Out-Null
+            $svc | Invoke-CimMethod -MethodName SetKeyManagementServicePort -Arguments @{PortNumber=1688} -EA SilentlyContinue | Out-Null
+            
+            Start-Process "cscript" -ArgumentList "//nologo `"$env:SystemRoot\system32\slmgr.vbs`" /ato" -NoNewWindow -Wait
+            Start-Sleep -Seconds 3
+            
+            $final = Get-ActivationStatus
+            if ($final -and $final.IsActivated) {
+                Write-Output "[OK] Berhasil diaktivasi via KMS Server: $kmsServer"
+                $success = $true
+                break
+            } else {
+                Write-Output "Server $kmsServer tidak berhasil, mencoba server berikutnya..."
+            }
+        } catch {
+            Write-Output "Server $kmsServer gagal: $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $success) {
+        Write-Output "[ERROR] Semua KMS Server gagal. Periksa koneksi internet Anda."
+    }
+    return $success
+}
+
+function Convert-EditionToProAndActivate {
+    Write-Output "=== KONVERSI EDISI: Enterprise/Education -> Pro ==="
+    Write-Output "Memasang Product Key Windows 11 Pro (GVLK)..."
+    
+    $proGvlk = "W269N-WFGWX-YVC9B-4J6C9-T83GX"
     try {
-        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
-        $svc | Invoke-CimMethod -MethodName SetKeyManagementServiceMachine -Arguments @{Name=$kmsServer} -ErrorAction Stop
-        Write-Output "Menghubungi KMS Server..."
-        Start-Process -FilePath "cscript" -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-        $final = Get-ActivationStatus
-        if ($final.IsActivated) { Write-Output "Windows Server berhasil diaktivasi via KMS!"; return $true }
-        else { Write-Output "[ERROR] KMS Server tidak merespon."; return $false }
+        # Install Pro GVLK key
+        $out = & cscript //nologo "$env:SystemRoot\system32\slmgr.vbs" /ipk $proGvlk 2>&1
+        Write-Output "slmgr /ipk: $($out -join ' ')"
+        Start-Sleep -Seconds 2
     } catch {
-        Write-Output "[ERROR] Gagal mengatur KMS Server."
+        Write-Output "[ERROR] Gagal memasang key Pro: $($_.Exception.Message)"
         return $false
     }
+    
+    Write-Output "Mengaktifkan sebagai Windows Pro via KMS..."
+    return Invoke-KMSActivation
 }
 
 function Start-WindowsActivation {
     [CmdletBinding()] param()
     process {
-        Write-Output "Mendeteksi edisi sistem operasi..."
+        Write-Output "Mendeteksi edisi Windows..."
         $status = Get-ActivationStatus
         if (-not $status) { Write-Output "[ERROR] Gagal mendeteksi OS."; return $false }
-        Write-Output "Edisi ditemukan: $($status.Edition)"
+        Write-Output "Edisi: $($status.Edition)"
+        Write-Output "Status saat ini: $($status.Status)"
 
-        $matchKey = $null; $method = $null
+        # Tentukan key dan metode
+        $matchKey = $null; $method = "HWID"
         foreach ($k in $global:KeyDatabase.Keys) {
             if ($status.Edition -like "*$k*") {
                 $matchKey = $global:KeyDatabase[$k].Key
@@ -482,23 +593,48 @@ function Start-WindowsActivation {
         if (-not $matchKey) {
             if ($status.Edition -like "*Server*") {
                 $matchKey = $global:KeyDatabase["Server 2022 Standard"].Key; $method = "KMS"
+            } elseif ($status.Edition -like "*Enterprise*" -or $status.Edition -like "*Education*" -or $status.Edition -like "*LTSC*") {
+                $matchKey = $global:KeyDatabase["Enterprise"].Key; $method = "KMS"
             } else {
                 $matchKey = $global:KeyDatabase["Pro"].Key; $method = "HWID"
             }
         }
 
+        Write-Output "Metode aktivasi dipilih: $method"
+        Write-Output "Memasang Generic Key (GVLK): $matchKey ..."
         try {
-            Write-Output "Memasang Product Key..."
-            $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
-            $svc | Invoke-CimMethod -MethodName InstallProductKey -Arguments @{ProductKey=$matchKey} -ErrorAction Stop
+            $out = & cscript //nologo "$env:SystemRoot\system32\slmgr.vbs" /ipk $matchKey 2>&1
+            Write-Output "slmgr /ipk: $($out -join ' ')"
+            Start-Sleep -Seconds 2
         } catch {
-            Write-Output "[ERROR] Gagal memasang product key."
-            return $false
+            Write-Output "[WARN] Gagal pasang key via slmgr, lanjut aktivasi..."
         }
 
-        if ($method -eq "HWID") { return Invoke-HWIDActivation }
-        else { return Invoke-KMSActivation }
+        if ($method -eq "HWID") {
+            return Invoke-HWIDActivation
+        } else {
+            return Invoke-KMSActivation
+        }
     }
+}
+
+function Start-KMSOnlyActivation {
+    # Dipanggil langsung dari tombol KMS di UI
+    $status = Get-ActivationStatus
+    if (-not $status) { Write-Output "[ERROR] Gagal mendeteksi OS."; return $false }
+    Write-Output "Edisi: $($status.Edition)"
+    
+    $matchKey = $global:KeyDatabase["Enterprise"].Key
+    foreach ($k in $global:KeyDatabase.Keys) {
+        if ($status.Edition -like "*$k*") {
+            $matchKey = $global:KeyDatabase[$k].Key; break
+        }
+    }
+    
+    Write-Output "Memasang GVLK: $matchKey"
+    & cscript //nologo "$env:SystemRoot\system32\slmgr.vbs" /ipk $matchKey 2>&1 | ForEach-Object { Write-Output $_ }
+    Start-Sleep -Seconds 2
+    return Invoke-KMSActivation
 }
 
 # ============================
@@ -901,20 +1037,43 @@ function Start-WindowsActivation {
                             
                             <Border Style="{StaticResource CardBorder}">
                                 <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="220"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
-                                        <TextBlock Text="Run Activation Setup" FontSize="16" FontWeight="SemiBold" Foreground="#FFFFFF"/>
-                                        <TextBlock Text="Automatically determines the best method (HWID for Client, KMS for Server) and registers the license." FontSize="13" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                        <TextBlock Text="Auto-Detect &amp; Activate" FontSize="16" FontWeight="SemiBold" Foreground="#FFFFFF"/>
+                                        <TextBlock Text="Deteksi edisi otomatis: Home/Pro pakai HWID, Enterprise/Education/LTSC/Server pakai KMS." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                     </StackPanel>
-                                    <Button Name="BtnStartActivation" Grid.Column="1" Style="{StaticResource AccentButton}" Content="Activate Windows" VerticalAlignment="Center" Height="36"/>
+                                    <Button Name="BtnStartActivation" Grid.Column="1" Style="{StaticResource AccentButton}" Content="Auto Activate" VerticalAlignment="Center" Height="36"/>
                                 </Grid>
                             </Border>
-                            
+
+                            <Border Style="{StaticResource CardBorder}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="220"/></Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                        <TextBlock Text="Force KMS (Enterprise / VM)" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="Paksa aktivasi via KMS Server. Cocok untuk Enterprise, Education, LTSC, dan semua Virtual Machine." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <Button Name="BtnKMSActivation" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Activate via KMS" VerticalAlignment="Center" Height="36"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Style="{StaticResource CardBorder}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="220"/></Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,0,20,0">
+                                        <TextBlock Text="Convert Enterprise/Education ke Pro" FontSize="15" FontWeight="SemiBold"/>
+                                        <TextBlock Text="Jika salah install Enterprise, ganti ke Pro lalu aktifkan via KMS. Tidak perlu reinstall Windows." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <Button Name="BtnConvertToPro" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Convert to Pro" VerticalAlignment="Center" Height="36"/>
+                                </Grid>
+                            </Border>
+
                             <Border Style="{StaticResource CardBorder}">
                                 <StackPanel>
-                                    <TextBlock Text="Information" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                    <TextBlock Text="HWID: Digital license permanently tied to hardware. Survives OS reinstallations." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,2,0,4"/>
-                                    <TextBlock Text="KMS: Used for Server editions. Activates for 180 days and auto-renews." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                    <TextBlock Text="Panduan Metode Aktivasi" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                    <TextBlock Text="HWID: Lisensi digital permanen terikat ke hardware. Untuk Windows Home / Pro Retail &amp; OEM. Bertahan setelah reinstall." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,2,0,6"/>
+                                    <TextBlock Text="KMS: Untuk edisi Volume (Enterprise, Education, LTSC, Server) dan Virtual Machine. Berlaku 180 hari, otomatis perpanjang." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,2,0,6"/>
+                                    <TextBlock Text="Convert to Pro: Ganti edisi Enterprise ke Pro tanpa reinstall, lalu aktifkan via KMS." FontSize="12" Foreground="#AAAAAA" TextWrapping="Wrap" Margin="0,2,0,0"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -1046,7 +1205,7 @@ $allButtons = @(
     $BtnTabDashboard,$BtnTabOptimizer,$BtnTabDisplayFix,$BtnTabSecurityApps,$BtnTabActivation,
     $BtnQuickBoost,$BtnDisableWU,$BtnEnableWU,$BtnCleanTemp,$BtnUltimatePower,
     $BtnCreateRestore,$BtnResetGpu,$BtnClearDispCache,$BtnDefenderScan,
-    $BtnScanBloatware,$BtnUninstallBloatware,$BtnStartActivation
+    $BtnScanBloatware,$BtnUninstallBloatware,$BtnStartActivation,$BtnKMSActivation,$BtnConvertToPro
 )
 
 function Set-ControlsEnabled ($enabled) {
@@ -1178,12 +1337,12 @@ function Refresh-ActivationUI {
 # 12. EVENT BINDINGS
 # ============================
 $BtnQuickBoost.Add_Click({
-    Write-ToConsole "Starting Quick Boost..."
+    Write-ToConsole "Starting Quick Boost (Restore Point + Safe Optimization + Temp Clean + Power Plan)..."
     Invoke-BackgroundTask -Task {
         Run-CommandQuietly { Set-RestorePoint }
+        Run-CommandQuietly { Invoke-SystemOptimization }
         Run-CommandQuietly { Optimize-PowerPlan }
-        Run-CommandQuietly { Clear-TempFiles }
-        Write-Log "Quick Boost completed successfully."
+        Write-Log "Quick Boost selesai! Windows kini lebih ringan."
     }
 })
 
@@ -1277,12 +1436,32 @@ $BtnUninstallBloatware.Add_Click({
 })
 
 $BtnStartActivation.Add_Click({
-    Write-ToConsole "Starting Windows activation..."
+    Write-ToConsole "Auto-detecting Windows edition and activating..."
     Invoke-BackgroundTask -Task {
         Run-CommandQuietly { Start-WindowsActivation }
     } -OnComplete {
         Refresh-ActivationUI
         Write-ToConsole "Activation sequence completed."
+    }
+})
+
+$BtnKMSActivation.Add_Click({
+    Write-ToConsole "Starting forced KMS activation (Enterprise/Education/VM)..."
+    Invoke-BackgroundTask -Task {
+        Run-CommandQuietly { Start-KMSOnlyActivation }
+    } -OnComplete {
+        Refresh-ActivationUI
+        Write-ToConsole "KMS activation completed."
+    }
+})
+
+$BtnConvertToPro.Add_Click({
+    Write-ToConsole "Converting edition to Windows Pro and activating via KMS..."
+    Invoke-BackgroundTask -Task {
+        Run-CommandQuietly { Convert-EditionToProAndActivate }
+    } -OnComplete {
+        Refresh-ActivationUI
+        Write-ToConsole "Edition conversion completed."
     }
 })
 
