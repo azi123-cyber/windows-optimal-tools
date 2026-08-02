@@ -1301,28 +1301,26 @@ function Invoke-BackgroundTask {
                 $res = $null
                 try { $res = $ps.EndInvoke($asyncResult) }
                 catch {
-                    $capturedSyncHash.TxtConsole.AppendText("[ERROR] $($_.Exception.Message)`r`n")
+                    Write-ToConsole "Error: $($_.Exception.Message)" "ERROR"
                 }
                 if ($capturedOnComplete) {
                     try { & $capturedOnComplete $res }
                     catch {
-                        $capturedSyncHash.TxtConsole.AppendText("[ERROR in OnComplete] $($_.Exception.Message)`r`n")
+                        Write-ToConsole "Error in callback: $($_.Exception.Message)" "ERROR"
                     }
                 }
             } finally {
-                # This block runs UNCONDITIONALLY to guarantee controls are re-enabled
-                $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
-                    Set-ControlsEnabled $true
-                    $ProgressMain.IsIndeterminate = $false
-                    $ProgressMain.Value = 100
-                    $BtnCancelTask.Visibility = [System.Windows.Visibility]::Collapsed
-                })
+                # Runs unconditionally to restore UI state
+                Set-ControlsEnabled $true
+                $ProgressMain.IsIndeterminate = $false
+                $ProgressMain.Value = 100
+                $BtnCancelTask.Visibility = [System.Windows.Visibility]::Collapsed
                 $global:CurrentPowerShell = $null
                 $ps.Dispose()
                 $rs.Close()
             }
         }
-    })
+    }.GetNewClosure())
     $taskTimer.Start()
 }
 
