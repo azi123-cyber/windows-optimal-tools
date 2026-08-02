@@ -1099,12 +1099,9 @@ function Invoke-BackgroundTask {
             })
         }
         function Run-CommandQuietly ([ScriptBlock]$cmd) {
-            # Execute without streaming every single verbose object to prevent WPF lag
-            $results = & $cmd
-            if ($results) {
-                foreach ($r in $results) {
-                    if ($r -is [string]) { Write-Log $r }
-                }
+            # Execute and stream success output in real-time
+            & $cmd | ForEach-Object {
+                if ($_ -is [string]) { Write-Log $_ }
             }
         }
     }) | Out-Null
