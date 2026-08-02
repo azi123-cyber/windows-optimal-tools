@@ -1115,9 +1115,14 @@ function Start-KMSOnlyActivation {
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
                         <TextBlock Name="LblStatus" Text="Ready." FontSize="12" FontWeight="SemiBold" Foreground="#CCCCCC"/>
-                        <TextBlock Grid.Column="1" Text="Process Output" FontSize="11" Foreground="#666666"/>
+                        <Button Name="BtnCancelTask" Grid.Column="1" Content="Batal" Style="{StaticResource ActionButton}" FontSize="11" Padding="12,2,12,2" Margin="0,0,10,0" Visibility="Collapsed" Height="22" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="Process Output" FontSize="11" Foreground="#666666" VerticalAlignment="Center"/>
                     </Grid>
                     
                     <TextBox Name="TxtConsole" Grid.Row="1" Background="#121212" Foreground="#CCCCCC"
@@ -1253,10 +1258,12 @@ function Invoke-BackgroundTask {
     )
     Set-ControlsEnabled $false
     $ProgressMain.IsIndeterminate = $true
+    $BtnCancelTask.Visibility = [System.Windows.Visibility]::Visible
 
     $rs = New-TaskRunspace
     $ps = [PowerShell]::Create()
     $ps.Runspace = $rs
+    $global:CurrentPowerShell = $ps
 
     # Simplified logging to prevent UI thread starvation (lag)
     $ps.AddScript({
@@ -1290,18 +1297,30 @@ function Invoke-BackgroundTask {
     $taskTimer.Add_Tick({
         if ($asyncResult.IsCompleted) {
             $taskTimer.Stop()
-            $res = $null
-            try { $res = $ps.EndInvoke($asyncResult) }
-            catch {
-                $capturedSyncHash.TxtConsole.AppendText("[ERROR] $($_.Exception.Message)`r`n")
+            try {
+                $res = $null
+                try { $res = $ps.EndInvoke($asyncResult) }
+                catch {
+                    $capturedSyncHash.TxtConsole.AppendText("[ERROR] $($_.Exception.Message)`r`n")
+                }
+                if ($capturedOnComplete) {
+                    try { & $capturedOnComplete $res }
+                    catch {
+                        $capturedSyncHash.TxtConsole.AppendText("[ERROR in OnComplete] $($_.Exception.Message)`r`n")
+                    }
+                }
+            } finally {
+                # This block runs UNCONDITIONALLY to guarantee controls are re-enabled
+                $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
+                    Set-ControlsEnabled $true
+                    $ProgressMain.IsIndeterminate = $false
+                    $ProgressMain.Value = 100
+                    $BtnCancelTask.Visibility = [System.Windows.Visibility]::Collapsed
+                })
+                $global:CurrentPowerShell = $null
+                $ps.Dispose()
+                $rs.Close()
             }
-            if ($capturedOnComplete) { & $capturedOnComplete $res }
-            Set-ControlsEnabled $true
-            $ProgressMain.IsIndeterminate = $false
-            $ProgressMain.Value = 100
-            
-            $ps.Dispose()
-            $rs.Close()
         }
     })
     $taskTimer.Start()
@@ -1462,6 +1481,17 @@ $BtnConvertToPro.Add_Click({
     } -OnComplete {
         Refresh-ActivationUI
         Write-ToConsole "Edition conversion completed."
+    }
+})
+
+$BtnCancelTask.Add_Click({
+    if ($global:CurrentPowerShell) {
+        Write-ToConsole "Membatalkan proses saat ini... Harap tunggu." "WARN"
+        try {
+            $global:CurrentPowerShell.Stop()
+        } catch {
+            Write-ToConsole "Gagal membatalkan proses: $($_.Exception.Message)" "ERROR"
+        }
     }
 })
 
