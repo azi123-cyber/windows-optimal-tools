@@ -1114,25 +1114,27 @@ function Invoke-BackgroundTask {
     $capturedOnComplete = $OnComplete
     $capturedSyncHash   = $syncHash
 
-    $ps.BeginInvoke({
-        param($ar)
-        $psi = $ar.AsyncState
-        $res = $null
-        try { $res = $psi.EndInvoke($ar) }
-        catch {
-            $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
+    $asyncResult = $ps.BeginInvoke()
+    $taskTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $taskTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+    $taskTimer.Add_Tick({
+        if ($asyncResult.IsCompleted) {
+            $taskTimer.Stop()
+            $res = $null
+            try { $res = $ps.EndInvoke($asyncResult) }
+            catch {
                 $capturedSyncHash.TxtConsole.AppendText("[ERROR] $($_.Exception.Message)`r`n")
-            })
-        }
-        $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
+            }
             if ($capturedOnComplete) { & $capturedOnComplete $res }
             Set-ControlsEnabled $true
             $ProgressMain.IsIndeterminate = $false
             $ProgressMain.Value = 100
-        })
-        $psi.Dispose()
-        $rs.Close()
-    }, $ps) | Out-Null
+            
+            $ps.Dispose()
+            $rs.Close()
+        }
+    })
+    $taskTimer.Start()
 }
 
 # ============================
