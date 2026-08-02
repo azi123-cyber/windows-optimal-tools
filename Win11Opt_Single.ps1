@@ -1,9 +1,8 @@
 #Requires -Version 5.1
 # =============================================================================
-#   Windows All-in-One Utility - SINGLE FILE PORTABLE EDITION
-#   Cara Pakai (1 Baris dari PowerShell Admin):
-#   irm "URL_RAW_GITHUB_KAMU" | iex
-#   Atau jalankan langsung: powershell -STA -ExecutionPolicy Bypass -File Win11Opt_Single.ps1
+#   Windows All-in-One Utility - SINGLE FILE PORTABLE EDITION v1.1
+#   Cara Pakai (1 Baris dari PowerShell):
+#   irm "https://raw.githubusercontent.com/azi123-cyber/windows-optimal-tools/main/Win11Opt_Single.ps1" | iex
 # =============================================================================
 
 # ============================
@@ -13,22 +12,19 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 $isSTA   = [System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
 
 if (-not $isAdmin -or -not $isSTA) {
-    # Jika dijalankan via irm | iex, simpan dulu ke file temp lalu relaunch
     if ($PSCommandPath) {
-        $argsList = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        $launchFile = $PSCommandPath
     } else {
-        # Mode irm | iex : simpan script saat ini ke temp, relaunch dari sana
-        $tempScript = "$env:TEMP\Win11Opt_Run.ps1"
-        $MyInvocation.MyCommand.ScriptBlock | Out-File -FilePath $tempScript -Encoding UTF8 -Force
-        $argsList = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
+        # Mode irm | iex: simpan ke temp file dulu
+        $launchFile = "$env:TEMP\Win11Opt_Run.ps1"
+        $scriptContent = $MyInvocation.MyCommand.ScriptBlock
+        [System.IO.File]::WriteAllText($launchFile, $scriptContent.ToString(), [System.Text.Encoding]::UTF8)
     }
-
+    $args = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$launchFile`""
     if (-not $isAdmin) {
-        Write-Host "[Win11Opt] Memerlukan hak akses Administrator. Meluncurkan ulang sebagai Admin..." -ForegroundColor Yellow
-        Start-Process powershell.exe -ArgumentList $argsList -Verb RunAs
+        Start-Process powershell.exe -ArgumentList $args -Verb RunAs
     } else {
-        Write-Host "[Win11Opt] Memerlukan mode STA. Meluncurkan ulang..." -ForegroundColor Yellow
-        Start-Process powershell.exe -ArgumentList $argsList
+        Start-Process powershell.exe -ArgumentList $args
     }
     Exit
 }
@@ -42,19 +38,21 @@ Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Xaml
 
 # ============================
-# 2. INLINE MODUL: OPTIMIZER
+# 2. MODULE: OPTIMIZER
 # ============================
 function Set-RestorePoint {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Memulai pembuatan Restore Point..."
+        Write-Verbose "Membuat Restore Point..."
         try {
             Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue
             Checkpoint-Computer -Description "Win11Opt_BeforeTweak" -RestorePointType MODIFY_SETTINGS -Confirm:$false
-            Write-Verbose "System Restore Point 'Win11Opt_BeforeTweak' berhasil dibuat!"
+            Write-Verbose "Restore Point berhasil dibuat!"
             return $true
+        } catch {
+            Write-Error "Gagal membuat Restore Point: $($_.Exception.Message)"
+            return $false
         }
-        catch { Write-Error "Gagal membuat Restore Point: $_"; return $false }
     }
 }
 
@@ -62,44 +60,55 @@ function Disable-WindowsUpdate {
     [CmdletBinding()] param()
     process {
         Write-Verbose "Menonaktifkan Windows Update..."
-        foreach ($service in @("wuauserv","UsoSvc","bits")) {
+        foreach ($svc in @("wuauserv","UsoSvc","bits")) {
             try {
-                if (Get-Service $service -ErrorAction SilentlyContinue) {
-                    Stop-Service -Name $service -Force -ErrorAction Stop
-                    Set-Service  -Name $service -StartupType Disabled -ErrorAction Stop
+                if (Get-Service $svc -ErrorAction SilentlyContinue) {
+                    Stop-Service -Name $svc -Force -ErrorAction Stop
+                    Set-Service  -Name $svc -StartupType Disabled -ErrorAction Stop
+                    Write-Verbose "Service $svc dinonaktifkan."
                 }
-            } catch { Write-Error "Gagal menghentikan $service: $_" }
+            } catch {
+                Write-Error "Gagal menghentikan ${svc}: $($_.Exception.Message)"
+            }
         }
         $auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate", $auPath) | ForEach-Object {
-            if (!(Test-Path $_)) { New-Item -Path $_ -Force | Out-Null }
+        foreach ($p in @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate", $auPath)) {
+            if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
         }
         try {
             Set-ItemProperty -Path $auPath -Name "NoAutoUpdate" -Value 1 -Type DWord -Force
             Write-Verbose "Registry NoAutoUpdate diatur ke 1."
             return $true
-        } catch { Write-Error "Gagal mengatur registry Windows Update: $_"; return $false }
+        } catch {
+            Write-Error "Gagal set registry: $($_.Exception.Message)"
+            return $false
+        }
     }
 }
 
 function Enable-WindowsUpdate {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Mengaktifkan kembali Windows Update..."
-        $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-        if (Test-Path $path) {
-            try { Remove-ItemProperty -Path $path -Name "NoAutoUpdate" -ErrorAction SilentlyContinue }
-            catch { Set-ItemProperty -Path $path -Name "NoAutoUpdate" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue }
-        }
-        foreach ($service in @("wuauserv","UsoSvc","bits")) {
+        Write-Verbose "Mengaktifkan Windows Update..."
+        $auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+        if (Test-Path $auPath) {
             try {
-                if (Get-Service $service -ErrorAction SilentlyContinue) {
-                    Set-Service  -Name $service -StartupType Automatic -ErrorAction Stop
-                    Start-Service -Name $service -ErrorAction Stop
-                }
-            } catch { Write-Error "Gagal memulai $service: $_" }
+                Remove-ItemProperty -Path $auPath -Name "NoAutoUpdate" -ErrorAction SilentlyContinue
+            } catch {
+                Set-ItemProperty -Path $auPath -Name "NoAutoUpdate" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            }
         }
-        Write-Verbose "Windows Update berhasil diaktifkan kembali."
+        foreach ($svc in @("wuauserv","UsoSvc","bits")) {
+            try {
+                if (Get-Service $svc -ErrorAction SilentlyContinue) {
+                    Set-Service  -Name $svc -StartupType Automatic -ErrorAction Stop
+                    Start-Service -Name $svc -ErrorAction Stop
+                    Write-Verbose "Service $svc diaktifkan."
+                }
+            } catch {
+                Write-Error "Gagal memulai ${svc}: $($_.Exception.Message)"
+            }
+        }
         return $true
     }
 }
@@ -107,63 +116,63 @@ function Enable-WindowsUpdate {
 function Clear-TempFiles {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Membersihkan file-file sementara..."
-        $tempPaths   = @("$env:SystemRoot\Temp\*","$env:TEMP\*","$env:SystemRoot\Prefetch\*")
-        $deletedCount = 0; $freedBytes = 0
-        foreach ($p in $tempPaths) {
-            Write-Verbose "Memproses: $p"
-            Get-ChildItem -Path $p -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-                try { $freedBytes += $_.Length; Remove-Item $_.FullName -Force -Recurse -ErrorAction Stop; $deletedCount++ }
-                catch {}
+        Write-Verbose "Membersihkan file sementara..."
+        $count = 0; $bytes = 0
+        foreach ($path in @("$env:SystemRoot\Temp\*","$env:TEMP\*","$env:SystemRoot\Prefetch\*")) {
+            Write-Verbose "Memproses: $path"
+            Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                try { $bytes += $_.Length; Remove-Item $_.FullName -Force -Recurse; $count++ } catch {}
             }
-            Get-ChildItem -Path $p -Recurse -Directory -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path $path -Recurse -Directory -ErrorAction SilentlyContinue |
                 Sort-Object FullName -Descending | ForEach-Object {
                     try { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
                 }
         }
-        $freedMB = [Math]::Round($freedBytes / 1MB, 2)
-        Write-Verbose "Selesai! $deletedCount file dihapus, $freedMB MB dibebaskan."
-        return [PSCustomObject]@{ Success=$true; DeletedCount=$deletedCount; FreedSpaceMB=$freedMB }
+        $mb = [Math]::Round($bytes / 1MB, 2)
+        Write-Verbose "Selesai: $count file dihapus, $mb MB dibebaskan."
+        return [PSCustomObject]@{ Success=$true; DeletedCount=$count; FreedSpaceMB=$mb }
     }
 }
 
 function Optimize-PowerPlan {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Mengatur Power Plan ke Ultimate Performance..."
+        Write-Verbose "Mengatur Ultimate Performance..."
         try {
             $guid = "e9a42b02-d5df-448d-aa00-03f14749eb61"
             if ((powercfg -list) -notmatch $guid) { powercfg -duplicatescheme $guid | Out-Null }
             powercfg -setactive $guid
-            Write-Verbose "Power Plan berhasil diubah ke Ultimate Performance."
+            Write-Verbose "Ultimate Performance aktif."
             return $true
-        } catch { Write-Error "Gagal mengubah Power Plan: $_"; return $false }
+        } catch {
+            Write-Error "Gagal set Power Plan: $($_.Exception.Message)"
+            return $false
+        }
     }
 }
 
 # ============================
-# 3. INLINE MODUL: DISPLAY FIX
+# 3. MODULE: DISPLAY FIX
 # ============================
 function Reset-GraphicsStack {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Mereset Driver Grafis..."
+        Write-Verbose "Mereset driver grafis..."
         $ok = $false
         try {
-            $adapters = Get-PnpDevice -ClassName Display -Status OK -ErrorAction Stop
-            foreach ($a in $adapters) {
-                Disable-PnpDevice -InstanceId $a.InstanceId -Confirm:$false -ErrorAction Stop
+            Get-PnpDevice -ClassName Display -Status OK -ErrorAction Stop | ForEach-Object {
+                Disable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -ErrorAction Stop
                 Start-Sleep -Milliseconds 500
-                Enable-PnpDevice -InstanceId $a.InstanceId -Confirm:$false -ErrorAction Stop
-                Write-Verbose "Adapter $($a.FriendlyName) di-restart."
+                Enable-PnpDevice -InstanceId $_.InstanceId -Confirm:$false -ErrorAction Stop
+                Write-Verbose "Adapter $($_.FriendlyName) di-restart."
             }
             $ok = $true
-        } catch { Write-Warning "PnpDevice gagal: $_. Mencoba DWM..." }
+        } catch { Write-Warning "PnpDevice gagal: $($_.Exception.Message). Mencoba DWM..." }
         try {
             Stop-Process -Name dwm -Force -ErrorAction Stop
-            Write-Verbose "DWM berhasil dipicu restart."
+            Write-Verbose "DWM dipicu restart."
             $ok = $true
-        } catch { Write-Error "Gagal restart DWM: $_" }
+        } catch { Write-Error "Gagal restart DWM: $($_.Exception.Message)" }
         return $ok
     }
 }
@@ -171,91 +180,89 @@ function Reset-GraphicsStack {
 function Clean-GraphicsRegistry {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Membersihkan cache konfigurasi monitor di registry..."
-        $paths = @(
+        Write-Verbose "Membersihkan cache registry monitor..."
+        $count = 0
+        foreach ($path in @(
             "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration",
             "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity",
             "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\ScaleFactors"
-        )
-        $count = 0
-        foreach ($path in $paths) {
+        )) {
             if (Test-Path $path) {
                 Get-ChildItem -Path $path -ErrorAction SilentlyContinue | ForEach-Object {
                     try { Remove-Item -Path $_.PSPath -Recurse -Force; $count++ }
-                    catch { Write-Error "Gagal hapus $($_.PSPath): $_" }
+                    catch { Write-Error "Gagal hapus $($_.Name): $($_.Exception.Message)" }
                 }
             }
         }
-        Write-Verbose "Selesai. $count entri dihapus. Colokkan kembali kabel HDMI/DP Anda."
+        Write-Verbose "$count entri dihapus. Colokkan kembali kabel HDMI/DP."
         return ($count -gt 0)
     }
 }
 
 # ============================
-# 4. INLINE MODUL: SECURITY
+# 4. MODULE: SECURITY
 # ============================
 function Start-DefenderScan {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Memulai Quick Scan Windows Defender..."
+        Write-Verbose "Memulai Windows Defender Quick Scan..."
         try {
             if (Get-Command Start-MpScan -ErrorAction SilentlyContinue) {
                 Start-MpScan -ScanType QuickScan -ErrorAction Stop
-                Write-Verbose "Scan Defender selesai!"
+                Write-Verbose "Scan selesai!"
                 return $true
             } else {
-                $paths = @(
-                    "$env:ProgramFiles\Windows Defender\MpCmdRun.exe",
-                    "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe"
-                )
-                $exe = $null
-                foreach ($p in $paths) {
-                    $r = Resolve-Path $p -ErrorAction SilentlyContinue
-                    if ($r) { $exe = $r[-1].Path; break }
+                $resolved = Resolve-Path "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -ErrorAction SilentlyContinue
+                if (-not $resolved) {
+                    $resolved = Resolve-Path "$env:ProgramData\Microsoft\Windows Defender\Platform\*\MpCmdRun.exe" -ErrorAction SilentlyContinue
                 }
-                if ($exe) {
+                if ($resolved) {
+                    $exe = $resolved[-1].Path
                     $proc = Start-Process -FilePath $exe -ArgumentList "-Scan -ScanType 1" -NoNewWindow -PassThru -Wait
                     if ($proc.ExitCode -in @(0,2)) { Write-Verbose "Scan CLI selesai."; return $true }
-                    else { throw "MpCmdRun exit code: $($proc.ExitCode)" }
-                } else { throw "Windows Defender CLI tidak ditemukan." }
+                    else { throw "MpCmdRun exit: $($proc.ExitCode)" }
+                } else { throw "Defender CLI tidak ditemukan." }
             }
-        } catch { Write-Error "Gagal scan: $_"; return $false }
+        } catch {
+            Write-Error "Scan gagal: $($_.Exception.Message)"
+            return $false
+        }
     }
 }
 
 # ============================
-# 5. INLINE MODUL: BLOATWARE
+# 5. MODULE: BLOATWARE
 # ============================
 $global:BloatwareMap = [ordered]@{
-    "Cortana"                         = "Microsoft.549981C3F5F10"
-    "Xbox Suite & Overlay"            = "Microsoft.Xbox*"
-    "Skype"                           = "Microsoft.SkypeApp"
-    "Movies & TV (Zune Video)"        = "Microsoft.ZuneVideo"
-    "Groove Music (Zune Music)"       = "Microsoft.ZuneMusic"
-    "Microsoft Office Hub"            = "Microsoft.MicrosoftOfficeHub"
-    "Solitaire Collection"            = "Microsoft.MicrosoftSolitaireCollection"
-    "Feedback Hub"                    = "Microsoft.WindowsFeedbackHub"
-    "Mixed Reality Portal"            = "Microsoft.MixedReality.Portal"
-    "Sticky Notes"                    = "Microsoft.MicrosoftStickyNotes"
-    "Windows Maps"                    = "Microsoft.WindowsMaps"
-    "Phone Link (Your Phone)"         = "Microsoft.YourPhone"
-    "MSN Weather"                     = "Microsoft.BingWeather"
-    "MSN News"                        = "Microsoft.BingNews"
-    "MSN Sports"                      = "Microsoft.BingSports"
-    "MSN Finance"                     = "Microsoft.BingFinance"
-    "Paint 3D"                        = "Microsoft.MSPaint"
-    "3D Viewer"                       = "Microsoft.Microsoft3DViewer"
-    "Windows People"                  = "Microsoft.People"
-    "OneNote"                         = "Microsoft.Office.OneNote"
-    "Get Help"                        = "Microsoft.GetHelp"
-    "Mail & Calendar"                 = "Microsoft.windowscommunicationsapps"
-    "Clipchamp"                       = "Clipchamp.Clipchamp"
+    "Cortana"              = "Microsoft.549981C3F5F10"
+    "Xbox Suite"           = "Microsoft.Xbox*"
+    "Skype"                = "Microsoft.SkypeApp"
+    "Movies & TV"          = "Microsoft.ZuneVideo"
+    "Groove Music"         = "Microsoft.ZuneMusic"
+    "Office Hub"           = "Microsoft.MicrosoftOfficeHub"
+    "Solitaire"            = "Microsoft.MicrosoftSolitaireCollection"
+    "Feedback Hub"         = "Microsoft.WindowsFeedbackHub"
+    "Mixed Reality Portal" = "Microsoft.MixedReality.Portal"
+    "Sticky Notes"         = "Microsoft.MicrosoftStickyNotes"
+    "Windows Maps"         = "Microsoft.WindowsMaps"
+    "Phone Link"           = "Microsoft.YourPhone"
+    "MSN Weather"          = "Microsoft.BingWeather"
+    "MSN News"             = "Microsoft.BingNews"
+    "MSN Sports"           = "Microsoft.BingSports"
+    "MSN Finance"          = "Microsoft.BingFinance"
+    "Paint 3D"             = "Microsoft.MSPaint"
+    "3D Viewer"            = "Microsoft.Microsoft3DViewer"
+    "Windows People"       = "Microsoft.People"
+    "OneNote"              = "Microsoft.Office.OneNote"
+    "Get Help"             = "Microsoft.GetHelp"
+    "Mail & Calendar"      = "Microsoft.windowscommunicationsapps"
+    "Clipchamp"            = "Clipchamp.Clipchamp"
 }
 
 function Get-BloatwareStatus {
     [CmdletBinding()] param()
     process {
-        Write-Verbose "Memindai daftar bloatware terinstal..."
+        Write-Verbose "Memindai bloatware..."
         try {
             $installed = Get-AppxPackage -AllUsers -ErrorAction Stop | Select-Object -ExpandProperty Name
             $results   = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -267,11 +274,13 @@ function Get-BloatwareStatus {
                     Type = "UWP"; Installed = [bool]$found
                 })
             }
-            # Cek OneDrive
             $odInstalled = $false
-            if (Test-Path "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" -or
-                Test-Path "$env:SystemRoot\System32\OneDriveSetup.exe") {
-                $odInstalled = (Get-Process "OneDrive" -ErrorAction SilentlyContinue) -or
+            $odPaths = @(
+                "$env:SystemRoot\SysWOW64\OneDriveSetup.exe",
+                "$env:SystemRoot\System32\OneDriveSetup.exe"
+            )
+            if (($odPaths | Where-Object { Test-Path $_ }).Count -gt 0) {
+                $odInstalled = ($null -ne (Get-Process "OneDrive" -ErrorAction SilentlyContinue)) -or
                                (Test-Path "$env:LocalAppData\Microsoft\OneDrive\OneDrive.exe") -or
                                (Test-Path "$env:ProgramFiles\Microsoft OneDrive\OneDrive.exe")
             }
@@ -280,7 +289,10 @@ function Get-BloatwareStatus {
                 Type = "Win32"; Installed = $odInstalled
             })
             return $results
-        } catch { Write-Error "Gagal scan bloatware: $_"; return @() }
+        } catch {
+            Write-Error "Scan bloatware gagal: $($_.Exception.Message)"
+            return @()
+        }
     }
 }
 
@@ -301,16 +313,22 @@ function Remove-Bloatware {
                     elseif (Test-Path $u32) { Start-Process -FilePath $u32 -ArgumentList "/uninstall" -NoNewWindow -Wait }
                     Remove-Item "$env:LocalAppData\Microsoft\OneDrive" -Force -Recurse -ErrorAction SilentlyContinue
                     Remove-Item "$env:ProgramData\Microsoft\OneDrive"  -Force -Recurse -ErrorAction SilentlyContinue
+                    Write-Verbose "OneDrive dihapus."
                     $ok++
-                } catch { Write-Error "Gagal hapus OneDrive: $_"; $fail++ }
+                } catch {
+                    Write-Error "Gagal hapus OneDrive: $($_.Exception.Message)"
+                    $fail++
+                }
             } else {
                 try {
-                    $pkgs = Get-AppxPackage -AllUsers | Where-Object { $_.Name -like $app.PackageName }
-                    if ($pkgs) {
-                        $pkgs | ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction Stop }
-                    }
+                    Get-AppxPackage -AllUsers | Where-Object { $_.Name -like $app.PackageName } |
+                        ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction Stop }
+                    Write-Verbose "$($app.DisplayName) dihapus."
                     $ok++
-                } catch { Write-Error "Gagal hapus $($app.DisplayName): $_"; $fail++ }
+                } catch {
+                    Write-Error "Gagal hapus $($app.DisplayName): $($_.Exception.Message)"
+                    $fail++
+                }
             }
         }
         Write-Verbose "Selesai. Berhasil: $ok, Gagal: $fail."
@@ -319,29 +337,25 @@ function Remove-Bloatware {
 }
 
 # ============================
-# 6. INLINE MODUL: ACTIVATION
+# 6. MODULE: ACTIVATION
 # ============================
 $global:KeyDatabase = [ordered]@{
-    "Home"                        = @{ Key = "TX9XD-98N7V-6WMQ6-BX7FG-H8Q99"; Method = "HWID" }
-    "HomeN"                       = @{ Key = "3KHY7-WNT83-DGQKR-F7HPR-844BM"; Method = "HWID" }
-    "Home Single Language"        = @{ Key = "7HNRX-D7KGG-3K4RQ-4WPJ4-YTDFH"; Method = "HWID" }
-    "Home Country Specific"       = @{ Key = "PVMJN-6DFY6-9CCP6-7FDTT-D3WVR"; Method = "HWID" }
-    "Pro"                         = @{ Key = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"; Method = "HWID" }
-    "ProN"                        = @{ Key = "4CPRK-NM3K3-X6XXQ-RXX86-WXCHW"; Method = "HWID" }
-    "Pro Education"               = @{ Key = "8PTT6-NU4BB-W9X7Y-XX2DM-KY9QP"; Method = "HWID" }
-    "Pro Workstations"            = @{ Key = "DXG7C-N36C4-C4QG5-Y4V33-3V92Y"; Method = "HWID" }
-    "Education"                   = @{ Key = "YNMGQ-8RYV3-4PGQ3-C8XTP-7CFBY"; Method = "HWID" }
-    "Enterprise"                  = @{ Key = "XGVPP-NMH47-7TTHJ-W3FW7-8DEC8"; Method = "HWID" }
-    "EnterpriseN"                 = @{ Key = "3V6Q6-NXM87-R4YHF-9H46Y-CC7QH"; Method = "HWID" }
-    "EnterpriseS"                 = @{ Key = "M7XTQ-FN8P6-TTKYV-9D4CC-J46GB"; Method = "HWID" }
-    "EnterpriseS 2019"            = @{ Key = "43TBQ-NH92J-XK8CD-Q8FB6-BFFQ9"; Method = "HWID" }
-    "EnterpriseS 2016"            = @{ Key = "2D77C-G7M27-2QGBF-FB22X-K3M83"; Method = "HWID" }
-    "Server 2022 Standard"        = @{ Key = "VDYBN-27WMT-V348H-WJ7WS-T628W"; Method = "KMS"  }
-    "Server 2022 Datacenter"      = @{ Key = "WX4NQ-8MMHS-WY399-W8X32-8QQ62"; Method = "KMS"  }
-    "Server 2019 Standard"        = @{ Key = "N69G4-B83C2-QT9QP-WRX9B-PFQJH"; Method = "KMS"  }
-    "Server 2019 Datacenter"      = @{ Key = "WMDGN-G9PQG-XVVXX-R3X43-63DFG"; Method = "KMS"  }
-    "Server 2016 Standard"        = @{ Key = "WC2BQ-8NRM3-FDDYY-2BFGV-KCHQY"; Method = "KMS"  }
-    "Server 2016 Datacenter"      = @{ Key = "CB7KF-BWN84-R7R2Y-793K2-8XDDG"; Method = "KMS"  }
+    "Home"               = @{ Key = "TX9XD-98N7V-6WMQ6-BX7FG-H8Q99"; Method = "HWID" }
+    "HomeN"              = @{ Key = "3KHY7-WNT83-DGQKR-F7HPR-844BM"; Method = "HWID" }
+    "Pro"                = @{ Key = "VK7JG-NPHTM-C97JM-9MPGT-3V66T"; Method = "HWID" }
+    "ProN"               = @{ Key = "4CPRK-NM3K3-X6XXQ-RXX86-WXCHW"; Method = "HWID" }
+    "Pro Education"      = @{ Key = "8PTT6-NU4BB-W9X7Y-XX2DM-KY9QP"; Method = "HWID" }
+    "Pro Workstations"   = @{ Key = "DXG7C-N36C4-C4QG5-Y4V33-3V92Y"; Method = "HWID" }
+    "Education"          = @{ Key = "YNMGQ-8RYV3-4PGQ3-C8XTP-7CFBY"; Method = "HWID" }
+    "Enterprise"         = @{ Key = "XGVPP-NMH47-7TTHJ-W3FW7-8DEC8"; Method = "HWID" }
+    "EnterpriseN"        = @{ Key = "3V6Q6-NXM87-R4YHF-9H46Y-CC7QH"; Method = "HWID" }
+    "EnterpriseS"        = @{ Key = "M7XTQ-FN8P6-TTKYV-9D4CC-J46GB"; Method = "HWID" }
+    "Server 2022 Standard"   = @{ Key = "VDYBN-27WMT-V348H-WJ7WS-T628W"; Method = "KMS" }
+    "Server 2022 Datacenter" = @{ Key = "WX4NQ-8MMHS-WY399-W8X32-8QQ62"; Method = "KMS" }
+    "Server 2019 Standard"   = @{ Key = "N69G4-B83C2-QT9QP-WRX9B-PFQJH"; Method = "KMS" }
+    "Server 2019 Datacenter" = @{ Key = "WMDGN-G9PQG-XVVXX-R3X43-63DFG"; Method = "KMS" }
+    "Server 2016 Standard"   = @{ Key = "WC2BQ-8NRM3-FDDYY-2BFGV-KCHQY"; Method = "KMS" }
+    "Server 2016 Datacenter" = @{ Key = "CB7KF-BWN84-R7R2Y-793K2-8XDDG"; Method = "KMS" }
 }
 
 function Get-ActivationStatus {
@@ -367,7 +381,84 @@ function Get-ActivationStatus {
                 Edition=$os.Caption; Version=$os.Version
                 Status=$statusStr; IsActivated=$isAct
             }
-        } catch { Write-Error "Gagal cek status: $_"; return $null }
+        } catch {
+            Write-Error "Gagal cek aktivasi: $($_.Exception.Message)"
+            return $null
+        }
+    }
+}
+
+function Invoke-HWIDActivation {
+    Write-Verbose "Memulai HWID Activation..."
+    $tempDir = "$env:TEMP\Win11OptAct"
+    if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
+    $exe    = "$tempDir\gatherosstate.exe"
+    $ticket = "$tempDir\GenuineTicket.xml"
+    if (Test-Path $ticket) { Remove-Item $ticket -Force }
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $url = "https://github.com/massgravel/Microsoft-Activation-Scripts/raw/main/MAS/All-In-One-Version-KL/bin/gatherosstate.exe"
+    try {
+        Write-Verbose "Mengunduh gatherosstate.exe..."
+        (New-Object System.Net.WebClient).DownloadFile($url, $exe)
+        Write-Verbose "Download selesai."
+    } catch {
+        Write-Error "Gagal download: $($_.Exception.Message)"
+        return $false
+    }
+    try {
+        $proc = Start-Process -FilePath $exe -WorkingDirectory $tempDir -NoNewWindow -PassThru -Wait
+        if ($proc.ExitCode -ne 0) { throw "Exit code: $($proc.ExitCode)" }
+    } catch {
+        Write-Error "Gagal buat tiket: $($_.Exception.Message)"
+        return $false
+    }
+    if (-not (Test-Path $ticket)) { Write-Error "GenuineTicket.xml tidak ditemukan."; return $false }
+
+    $clipSvc = "$env:ProgramData\Microsoft\Windows\ClipSVC\GenuineTicket"
+    if (-not (Test-Path $clipSvc)) { New-Item -ItemType Directory -Path $clipSvc -Force | Out-Null }
+    try {
+        Copy-Item -Path $ticket -Destination "$clipSvc\GenuineTicket.xml" -Force
+    } catch {
+        Write-Error "Gagal salin tiket: $($_.Exception.Message)"
+        return $false
+    }
+    try { Restart-Service -Name "ClipSVC" -Force; Start-Sleep -Seconds 2 }
+    catch { Write-Warning "ClipSVC restart gagal, melanjutkan..." }
+
+    try {
+        (Get-CimInstance -ClassName SoftwareLicensingService) |
+            Invoke-CimMethod -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue
+        Start-Process -FilePath "cscript" `
+            -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" `
+            -NoNewWindow -Wait
+        $final = Get-ActivationStatus
+        if ($final.IsActivated) { Write-Verbose "WINDOWS TERAKTIVASI PERMANEN!"; return $true }
+        else { Write-Error "Proses selesai tapi status belum aktif. Cek koneksi internet."; return $false }
+    } catch {
+        Write-Error "Gagal aktivasi online: $($_.Exception.Message)"
+        return $false
+    } finally {
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-KMSActivation {
+    Write-Verbose "Memulai KMS Activation..."
+    $kmsServer = "kms8.msguides.com"
+    try {
+        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
+        $svc | Invoke-CimMethod -MethodName SetKeyManagementServiceMachine -Arguments @{Name=$kmsServer} -ErrorAction Stop
+        Write-Verbose "Server KMS diatur: $kmsServer"
+        Start-Process -FilePath "cscript" `
+            -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" `
+            -NoNewWindow -Wait
+        $final = Get-ActivationStatus
+        if ($final.IsActivated) { Write-Verbose "WINDOWS SERVER TERAKTIVASI VIA KMS!"; return $true }
+        else { Write-Error "KMS aktivasi gagal. Server mungkin sibuk."; return $false }
+    } catch {
+        Write-Error "KMS error: $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -378,6 +469,7 @@ function Start-WindowsActivation {
         $status = Get-ActivationStatus
         if (-not $status) { Write-Error "Gagal mendeteksi OS."; return $false }
         Write-Verbose "Edisi: $($status.Edition)"
+
         $matchKey = $null; $method = $null
         foreach ($k in $global:KeyDatabase.Keys) {
             if ($status.Edition -like "*$k*") {
@@ -393,65 +485,20 @@ function Start-WindowsActivation {
                 $matchKey = $global:KeyDatabase["Pro"].Key; $method = "HWID"
             }
         }
+
         Write-Verbose "Metode: $method | Key: $matchKey"
         try {
             $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
             $svc | Invoke-CimMethod -MethodName InstallProductKey -Arguments @{ProductKey=$matchKey} -ErrorAction Stop
             Write-Verbose "Product key berhasil didaftarkan."
-        } catch { Write-Error "Gagal daftar product key: $_"; return $false }
+        } catch {
+            Write-Error "Gagal daftar product key: $($_.Exception.Message)"
+            return $false
+        }
+
         if ($method -eq "HWID") { return Invoke-HWIDActivation }
         else { return Invoke-KMSActivation }
     }
-}
-
-function Invoke-HWIDActivation {
-    Write-Verbose "Memulai HWID Activation..."
-    $tempDir = "$env:TEMP\Win11OptActivation"
-    if (!(Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
-    $exe    = "$tempDir\gatherosstate.exe"
-    $ticket = "$tempDir\GenuineTicket.xml"
-    if (Test-Path $ticket) { Remove-Item $ticket -Force }
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $url = "https://github.com/massgravel/Microsoft-Activation-Scripts/raw/main/MAS/All-In-One-Version-KL/bin/gatherosstate.exe"
-    try {
-        Write-Verbose "Mengunduh gatherosstate.exe..."
-        (New-Object System.Net.WebClient).DownloadFile($url, $exe)
-        Write-Verbose "Download selesai."
-    } catch { Write-Error "Gagal download gatherosstate.exe: $_"; return $false }
-    try {
-        $p = Start-Process -FilePath $exe -WorkingDirectory $tempDir -NoNewWindow -PassThru -Wait
-        if ($p.ExitCode -ne 0) { throw "Exit code: $($p.ExitCode)" }
-    } catch { Write-Error "Gagal buat tiket: $_"; return $false }
-    if (!(Test-Path $ticket)) { Write-Error "GenuineTicket.xml tidak ditemukan."; return $false }
-    $clipSvc = "$env:ProgramData\Microsoft\Windows\ClipSVC\GenuineTicket"
-    if (!(Test-Path $clipSvc)) { New-Item -ItemType Directory -Path $clipSvc -Force | Out-Null }
-    try {
-        Copy-Item -Path $ticket -Destination "$clipSvc\GenuineTicket.xml" -Force
-    } catch { Write-Error "Gagal salin tiket ke ClipSVC: $_"; return $false }
-    try { Restart-Service -Name "ClipSVC" -Force; Start-Sleep -Seconds 2 }
-    catch { Write-Warning "Gagal restart ClipSVC: $_" }
-    try {
-        (Get-CimInstance -ClassName SoftwareLicensingService) |
-            Invoke-CimMethod -MethodName RefreshLicenseStatus -ErrorAction SilentlyContinue
-        Start-Process -FilePath "cscript" -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-        $final = Get-ActivationStatus
-        if ($final.IsActivated) { Write-Verbose "WINDOWS TERAKTIVASI PERMANEN!"; return $true }
-        else { Write-Error "Aktivasi selesai tapi status belum aktif. Cek koneksi internet."; return $false }
-    } catch { Write-Error "Gagal aktivasi online: $_"; return $false }
-    finally { Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
-}
-
-function Invoke-KMSActivation {
-    Write-Verbose "Memulai KMS Activation..."
-    $kmsServer = "kms8.msguides.com"
-    try {
-        $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
-        $svc | Invoke-CimMethod -MethodName SetKeyManagementServiceMachine -Arguments @{Name=$kmsServer} -ErrorAction Stop
-        Start-Process -FilePath "cscript" -ArgumentList "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-        $final = Get-ActivationStatus
-        if ($final.IsActivated) { Write-Verbose "WINDOWS SERVER TERAKTIVASI VIA KMS!"; return $true }
-        else { Write-Error "Gagal aktivasi KMS. Server mungkin sibuk."; return $false }
-    } catch { Write-Error "Gagal KMS: $_"; return $false }
 }
 
 # ============================
@@ -464,13 +511,11 @@ function Invoke-KMSActivation {
         WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
         Background="#1E1E1E" Foreground="#FFFFFF"
         FontFamily="Segoe UI, Segoe UI Variable, Arial">
-
     <Window.Resources>
         <Style TargetType="ScrollBar">
             <Setter Property="Background" Value="#1A1A1A"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
         </Style>
-
         <Style x:Key="SidebarTabButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="#CCCCCC"/>
@@ -499,7 +544,6 @@ function Invoke-KMSActivation {
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style x:Key="ActionButton" TargetType="Button">
             <Setter Property="Background" Value="#2B2B2B"/>
             <Setter Property="Foreground" Value="#FFFFFF"/>
@@ -512,8 +556,7 @@ function Invoke-KMSActivation {
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="border" Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="6">
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -533,13 +576,11 @@ function Invoke-KMSActivation {
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource ActionButton}">
             <Setter Property="Background" Value="#0078D4"/>
             <Setter Property="BorderBrush" Value="#005A9E"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
-
         <Style x:Key="CardBorder" TargetType="Border">
             <Setter Property="Background" Value="#272727"/>
             <Setter Property="BorderBrush" Value="#333333"/>
@@ -549,13 +590,11 @@ function Invoke-KMSActivation {
             <Setter Property="Margin" Value="0,0,0,15"/>
         </Style>
     </Window.Resources>
-
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="240"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
-
         <!-- SIDEBAR -->
         <Grid Grid.Column="0" Background="#161616">
             <Grid.RowDefinitions>
@@ -563,7 +602,6 @@ function Invoke-KMSActivation {
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="140"/>
             </Grid.RowDefinitions>
-
             <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
                 <TextBlock Text="&#x1F6E0;&#xFE0F;" FontSize="26" VerticalAlignment="Center"/>
                 <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
@@ -571,7 +609,6 @@ function Invoke-KMSActivation {
                     <TextBlock Text="All-in-One Optimizer" FontSize="11" Foreground="#888888"/>
                 </StackPanel>
             </StackPanel>
-
             <StackPanel Grid.Row="1" Margin="0,10,0,0">
                 <Button Name="BtnTabDashboard"    Style="{StaticResource SidebarTabButton}" Content="&#x1F4CA;   Dashboard"/>
                 <Button Name="BtnTabOptimizer"    Style="{StaticResource SidebarTabButton}" Content="&#x26A1;   Optimizer"/>
@@ -580,24 +617,17 @@ function Invoke-KMSActivation {
                 <Button Name="BtnTabActivation"   Style="{StaticResource SidebarTabButton}" Content="&#x1F5DD;&#xFE0F;   Aktivasi Windows"/>
                 <Button Name="BtnTabAbout"        Style="{StaticResource SidebarTabButton}" Content="&#x2139;&#xFE0F;   About &amp; Help"/>
             </StackPanel>
-
             <Border Grid.Row="2" Background="#1D1D1D" BorderBrush="#252525" BorderThickness="0,1,0,0" Padding="20,15,20,15">
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="MONITOR PERANGKAT" FontSize="10" FontWeight="Bold" Foreground="#666666" Margin="0,0,0,10"/>
-                    <Grid Margin="0,0,0,10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBlock Text="Beban CPU" FontSize="11" Foreground="#AAAAAA"/>
                         <TextBlock Name="LblCpuVal" Grid.Column="1" Text="0%" FontSize="11" FontWeight="Bold" Foreground="#0078D4"/>
                     </Grid>
                     <ProgressBar Name="ProgCpu" Height="4" Value="0" Maximum="100" Background="#333333" Foreground="#0078D4" BorderThickness="0"/>
-                    <Grid Margin="0,12,0,5">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                    <Grid Margin="0,12,0,4">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBlock Text="RAM Terpakai" FontSize="11" Foreground="#AAAAAA"/>
                         <TextBlock Name="LblRamVal" Grid.Column="1" Text="0%" FontSize="11" FontWeight="Bold" Foreground="#107C41"/>
                     </Grid>
@@ -605,33 +635,24 @@ function Invoke-KMSActivation {
                 </StackPanel>
             </Border>
         </Grid>
-
         <!-- MAIN CONTENT -->
         <Grid Grid.Column="1" Background="#1F1F1F">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="180"/>
             </Grid.RowDefinitions>
-
             <Grid Grid.Row="0" Margin="25,25,25,0">
-
                 <!-- TAB 1: DASHBOARD -->
                 <Grid Name="PanelDashboard" Visibility="Visible">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Dashboard Utama" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
-                        <TextBlock Text="Pantau status sistem Anda dan lakukan optimalisasi cepat dengan sekali klik." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
+                        <TextBlock Text="Pantau status sistem dan lakukan optimalisasi cepat dengan sekali klik." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
                     </StackPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,10,0">
                                     <StackPanel>
                                         <TextBlock Text="Informasi OS" FontSize="11" Foreground="#888888" FontWeight="Bold"/>
@@ -649,13 +670,10 @@ function Invoke-KMSActivation {
                             </Grid>
                             <Border Style="{StaticResource CardBorder}" Background="#2D2010" BorderBrush="#503810">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="180"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="180"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center">
-                                        <TextBlock Text="&#x2B50;   Optimalisasi Sekali Klik (Quick Boost)" FontSize="16" FontWeight="Bold" Foreground="#F7A22D"/>
-                                        <TextBlock Text="Membuat Restore Point otomatis, membersihkan file sementara, dan mengaktifkan Ultimate Performance." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,5,15,0"/>
+                                        <TextBlock Text="&#x2B50; Optimalisasi Sekali Klik (Quick Boost)" FontSize="16" FontWeight="Bold" Foreground="#F7A22D"/>
+                                        <TextBlock Text="Membuat Restore Point otomatis, membersihkan file temp, dan mengaktifkan Ultimate Performance." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,5,15,0"/>
                                     </StackPanel>
                                     <Button Name="BtnQuickBoost" Grid.Column="1" Style="{StaticResource AccentButton}" Content="Jalankan Boost" VerticalAlignment="Center" Height="40"/>
                                 </Grid>
@@ -663,28 +681,21 @@ function Invoke-KMSActivation {
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
-
                 <!-- TAB 2: OPTIMIZER -->
                 <Grid Name="PanelOptimizer" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Modul Optimizer" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
-                        <TextBlock Text="Kelola update sistem, tingkatkan kinerja daya, dan bersihkan file sampah." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
+                        <TextBlock Text="Kelola update, tingkatkan kinerja daya, dan bersihkan file sampah." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
                     </StackPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <Border Style="{StaticResource CardBorder}">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="280"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,15,0">
                                         <TextBlock Text="Kontrol Windows Update" FontSize="15" FontWeight="Bold"/>
-                                        <TextBlock Text="Matikan auto-update untuk menghentikan pembaruan mengganggu, atau aktifkan kembali kapan saja." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                        <TextBlock Text="Matikan auto-update atau aktifkan kembali kapan saja." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
                                         <Button Name="BtnDisableWU" Style="{StaticResource ActionButton}" Content="Nonaktifkan Update" Width="135" Margin="0,0,10,0"/>
@@ -693,10 +704,7 @@ function Invoke-KMSActivation {
                                 </Grid>
                             </Border>
                             <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,10,0">
                                     <StackPanel>
                                         <TextBlock Text="Pembersih File Temp" FontSize="15" FontWeight="Bold"/>
@@ -714,12 +722,9 @@ function Invoke-KMSActivation {
                             </Grid>
                             <Border Style="{StaticResource CardBorder}">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="200"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,15,0">
-                                        <TextBlock Text="Buat Restore Point" FontSize="15" FontWeight="Bold"/>
+                                        <TextBlock Text="Buat System Restore Point" FontSize="15" FontWeight="Bold"/>
                                         <TextBlock Text="Disarankan sebelum tweak besar. Kembalikan sistem ke kondisi semula jika terjadi masalah." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
                                     </StackPanel>
                                     <Button Name="BtnCreateRestore" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Buat Restore Point" VerticalAlignment="Center"/>
@@ -728,13 +733,9 @@ function Invoke-KMSActivation {
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
-
                 <!-- TAB 3: DISPLAY FIX -->
                 <Grid Name="PanelDisplayFix" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Display &amp; HDMI Fix" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
                         <TextBlock Text="Perbaiki masalah output layar, HDMI tidak terdeteksi, atau crash driver grafis." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
@@ -743,23 +744,17 @@ function Invoke-KMSActivation {
                         <StackPanel>
                             <Border Style="{StaticResource CardBorder}">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="200"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,15,0">
                                         <TextBlock Text="Reset Driver Grafis" FontSize="15" FontWeight="Bold"/>
-                                        <TextBlock Text="Mematikan dan menghidupkan kembali display adapter secara aman. Berguna jika layar freeze atau berkedip." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                        <TextBlock Text="Mematikan dan menghidupkan kembali display adapter. Berguna jika layar freeze atau berkedip." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
                                     </StackPanel>
                                     <Button Name="BtnResetGpu" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Reset Driver Grafis" VerticalAlignment="Center"/>
                                 </Grid>
                             </Border>
                             <Border Style="{StaticResource CardBorder}">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="200"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,15,0">
                                         <TextBlock Text="Hapus Cache Konfigurasi Layar (HDMI Fix)" FontSize="15" FontWeight="Bold"/>
                                         <TextBlock Text="Menghapus cache resolusi dan koneksi monitor lama di registry. Memaksa Windows mendeteksi ulang monitor dari awal." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,0"/>
@@ -770,41 +765,27 @@ function Invoke-KMSActivation {
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
-
                 <!-- TAB 4: SECURITY & APPS -->
                 <Grid Name="PanelSecurityApps" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Keamanan &amp; Aplikasi (Bloatware)" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
-                        <TextBlock Text="Jalankan scan virus cepat atau pilih aplikasi bawaan Windows yang ingin dihapus." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
+                        <TextBlock Text="Jalankan scan virus atau pilih aplikasi bawaan Windows yang ingin dihapus." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
                     </StackPanel>
                     <Grid Grid.Row="1">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="280"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="280"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,10,15">
                             <StackPanel>
                                 <TextBlock Text="Windows Defender Scan" FontSize="15" FontWeight="Bold"/>
-                                <TextBlock Text="Jalankan scan virus cepat di background untuk memastikan sistem bersih dari ancaman aktif." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,20"/>
+                                <TextBlock Text="Jalankan scan virus cepat untuk memastikan sistem bersih dari ancaman aktif." FontSize="12" Foreground="#888888" TextWrapping="Wrap" Margin="0,5,0,20"/>
                                 <Button Name="BtnDefenderScan" Style="{StaticResource ActionButton}" Content="Mulai Quick Scan" HorizontalAlignment="Left"/>
                             </StackPanel>
                         </Border>
                         <Border Grid.Column="1" Style="{StaticResource CardBorder}" Margin="10,0,0,15" Padding="15">
                             <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Grid Grid.Row="0" Margin="0,0,0,10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="Pilih Bloatware untuk Dihapus:" FontSize="13" FontWeight="Bold" VerticalAlignment="Center"/>
                                     <Button Name="BtnScanBloatware" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Scan Terinstal" FontSize="11" Padding="8,4,8,4"/>
                                 </Grid>
@@ -812,35 +793,25 @@ function Invoke-KMSActivation {
                                     <StackPanel Name="StackBloatware" Margin="5,0,5,0"/>
                                 </ScrollViewer>
                                 <Grid Grid.Row="2">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Name="LblBloatwareCount" Text="Gunakan tombol 'Scan Terinstal' terlebih dahulu." FontSize="11" Foreground="#888888" VerticalAlignment="Center"/>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBlock Name="LblBloatwareCount" Text="Gunakan 'Scan Terinstal' terlebih dahulu." FontSize="11" Foreground="#888888" VerticalAlignment="Center"/>
                                     <Button Name="BtnUninstallBloatware" Grid.Column="1" Style="{StaticResource ActionButton}" Content="Hapus Aplikasi Terpilih" FontWeight="SemiBold"/>
                                 </Grid>
                             </Grid>
                         </Border>
                     </Grid>
                 </Grid>
-
                 <!-- TAB 5: ACTIVATION -->
                 <Grid Name="PanelActivation" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Aktivasi Windows Permanent" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
-                        <TextBlock Text="Aktifkan Windows Anda secara permanen dengan Lisensi Digital (HWID) resmi Microsoft." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
+                        <TextBlock Text="Aktifkan Windows secara permanen dengan Lisensi Digital (HWID) resmi Microsoft." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
                     </StackPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <Grid Margin="0,0,0,10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Border Grid.Column="0" Style="{StaticResource CardBorder}" Margin="0,0,10,0">
                                     <StackPanel>
                                         <TextBlock Text="Edisi OS Terdeteksi" FontSize="11" Foreground="#888888" FontWeight="Bold"/>
@@ -858,34 +829,27 @@ function Invoke-KMSActivation {
                             </Grid>
                             <Border Style="{StaticResource CardBorder}" Background="#152D15" BorderBrush="#2A502A">
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="200"/>
-                                    </Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
                                     <StackPanel VerticalAlignment="Center" Margin="0,0,15,0">
-                                        <TextBlock Text="&#x26A1;   Jalankan Aktivasi Otomatis (1-Klik)" FontSize="16" FontWeight="Bold" Foreground="#52C452"/>
-                                        <TextBlock Text="Mendaftarkan Generic Key resmi untuk edisi OS Anda, mengunduh gatherosstate.exe, menghasilkan GenuineTicket.xml lokal, dan memicu pendaftaran Lisensi Digital permanen." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                        <TextBlock Text="&#x26A1; Jalankan Aktivasi Otomatis (1-Klik)" FontSize="16" FontWeight="Bold" Foreground="#52C452"/>
+                                        <TextBlock Text="Mendaftarkan Generic Key Microsoft resmi, mengunduh gatherosstate.exe, menghasilkan GenuineTicket.xml, dan memicu pendaftaran Lisensi Digital permanen." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,5,0,0"/>
                                     </StackPanel>
                                     <Button Name="BtnStartActivation" Grid.Column="1" Style="{StaticResource AccentButton}" Background="#107C41" BorderBrush="#0B592E" Content="Aktifkan Sekarang" VerticalAlignment="Center" Height="40"/>
                                 </Grid>
                             </Border>
                             <Border Style="{StaticResource CardBorder}">
                                 <StackPanel>
-                                    <TextBlock Text="&#x2139;&#xFE0F;   Tentang Metode Aktivasi HWID &amp; KMS" FontSize="13" FontWeight="Bold" Margin="0,0,0,5"/>
-                                    <TextBlock Text="&#x2022; HWID: Lisensi digital permanen yang terikat dengan hardware motherboard Anda. Setelah aktif, install ulang Windows tidak perlu aktivasi ulang." FontSize="11.5" Foreground="#888888" TextWrapping="Wrap" Margin="0,2,0,2"/>
-                                    <TextBlock Text="&#x2022; KMS: Metode fallback untuk Windows Server. Aktif 180 hari dan dapat diperbarui otomatis." FontSize="11.5" Foreground="#888888" TextWrapping="Wrap" Margin="0,2,0,2"/>
+                                    <TextBlock Text="&#x2139;&#xFE0F; Tentang Metode Aktivasi HWID &amp; KMS" FontSize="13" FontWeight="Bold" Margin="0,0,0,5"/>
+                                    <TextBlock Text="&#x2022; HWID: Lisensi digital permanen terikat hardware motherboard. Setelah aktif, install ulang Windows tidak perlu aktivasi ulang." FontSize="11.5" Foreground="#888888" TextWrapping="Wrap" Margin="0,2,0,2"/>
+                                    <TextBlock Text="&#x2022; KMS: Fallback untuk Windows Server. Aktif 180 hari, dapat diperbarui otomatis." FontSize="11.5" Foreground="#888888" TextWrapping="Wrap" Margin="0,2,0,2"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
-
                 <!-- TAB 6: ABOUT -->
                 <Grid Name="PanelAbout" Visibility="Collapsed">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                     <StackPanel Grid.Row="0" Margin="0,0,0,20">
                         <TextBlock Text="Tentang &amp; Bantuan" FontSize="22" FontWeight="Bold" Foreground="#FFFFFF"/>
                         <TextBlock Text="Informasi mengenai aplikasi dan panduan singkat penggunaan." FontSize="13" Foreground="#888888" Margin="0,2,0,0"/>
@@ -894,38 +858,29 @@ function Invoke-KMSActivation {
                         <StackPanel>
                             <Border Style="{StaticResource CardBorder}">
                                 <StackPanel>
-                                    <TextBlock Text="Windows All-in-One Utility v1.0.0" FontSize="15" FontWeight="Bold" Foreground="#0078D4"/>
+                                    <TextBlock Text="Windows All-in-One Utility v1.1.0" FontSize="15" FontWeight="Bold" Foreground="#0078D4"/>
                                     <TextBlock Text="Aplikasi open-source untuk mengoptimalkan Windows 10/11, mengatasi error HDMI, membersihkan disk, dan membuang bloatware." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,10,0,10"/>
                                     <TextBlock Text="Lisensi: MIT (Bebas digunakan dan dimodifikasi)" FontSize="12" Foreground="#888888"/>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource CardBorder}">
                                 <StackPanel>
-                                    <TextBlock Text="Panduan Singkat &amp; Fitur Keamanan" FontSize="15" FontWeight="Bold" Margin="0,0,0,8"/>
-                                    <TextBlock Text="&#x2022; Selalu buat Restore Point sebelum menerapkan tweak besar." FontSize="12" Foreground="#CCCCCC" Margin="0,2,0,2"/>
-                                    <TextBlock Text="&#x2022; Antivirus mungkin menandai utilitas ini karena modifikasi registry/service - ini normal karena source code transparan." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,2,0,2"/>
+                                    <TextBlock Text="Panduan Singkat" FontSize="15" FontWeight="Bold" Margin="0,0,0,8"/>
+                                    <TextBlock Text="&#x2022; Selalu buat Restore Point sebelum tweak besar." FontSize="12" Foreground="#CCCCCC" Margin="0,2,0,2"/>
+                                    <TextBlock Text="&#x2022; Antivirus mungkin menandai utilitas ini karena modifikasi registry/service - ini normal." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,2,0,2"/>
                                     <TextBlock Text="&#x2022; Setelah HDMI Fix, colokkan kembali kabel monitor agar Windows mendeteksi ulang." FontSize="12" Foreground="#CCCCCC" TextWrapping="Wrap" Margin="0,2,0,2"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
-
             </Grid>
-
             <!-- CONSOLE LOG PANEL -->
             <Border Grid.Row="1" Background="#161616" BorderBrush="#252525" BorderThickness="0,1,0,0" Padding="25,12,25,15">
                 <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="0,0,0,5">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBlock Name="LblStatus" Text="Status: Siap." FontSize="12" FontWeight="SemiBold" Foreground="#AAAAAA"/>
                         <TextBlock Grid.Column="1" Text="Console Output" FontSize="11" Foreground="#666666"/>
                     </Grid>
@@ -949,16 +904,14 @@ function Invoke-KMSActivation {
 # ============================
 $reader = New-Object System.Xml.XmlNodeReader $xamlContent
 $Window = [Windows.Markup.XamlReader]::Load($reader)
-
-# Map kontrol berdasarkan atribut Name
 $xamlContent.SelectNodes("//*[@Name]") | ForEach-Object {
     Set-Variable -Name $_.Name -Value $Window.FindName($_.Name) -Scope Script
 }
 
 # ============================
-# 9. SETUP UI HELPERS
+# 9. UI HELPERS
 # ============================
-$brushConverter = New-Object System.Windows.Media.BrushConverter
+$brushConverter  = New-Object System.Windows.Media.BrushConverter
 $activeBg        = $brushConverter.ConvertFromString("#2B2B2B")
 $activeBorder    = $brushConverter.ConvertFromString("#0078D4")
 $transparentBrush = [System.Windows.Media.Brushes]::Transparent
@@ -966,7 +919,7 @@ $transparentBrush = [System.Windows.Media.Brushes]::Transparent
 $panels     = @($PanelDashboard,$PanelOptimizer,$PanelDisplayFix,$PanelSecurityApps,$PanelActivation,$PanelAbout)
 $tabButtons = @($BtnTabDashboard,$BtnTabOptimizer,$BtnTabDisplayFix,$BtnTabSecurityApps,$BtnTabActivation,$BtnTabAbout)
 
-function Switch-Tab($index) {
+function Switch-Tab ($index) {
     for ($i = 0; $i -lt $panels.Count; $i++) {
         if ($i -eq $index) {
             $panels[$i].Visibility      = [System.Windows.Visibility]::Visible
@@ -988,222 +941,138 @@ $BtnTabActivation.Add_Click({   Refresh-ActivationUI; Switch-Tab 4 })
 $BtnTabAbout.Add_Click({        Switch-Tab 5 })
 Switch-Tab 0
 
-# Info OS awal
 $os = Get-CimInstance Win32_OperatingSystem
 $LblOsName.Text    = $os.Caption
 $LblOsVersion.Text = "Build: $($os.Version) ($($os.OSArchitecture))"
 
+$syncHash = [hashtable]::Synchronized(@{
+    Window     = $Window
+    TxtConsole = $TxtConsole
+    LblStatus  = $LblStatus
+})
+
 function Write-ToConsole ($Message, $Level = "Info") {
-    $timestamp = Get-Date -Format "HH:mm:ss"
+    $ts = Get-Date -Format "HH:mm:ss"
     $Window.Dispatcher.Invoke([Action]{
-        $TxtConsole.AppendText("[$timestamp] [$Level] $Message`r`n")
+        $TxtConsole.AppendText("[$ts] [$Level] $Message`r`n")
         $TxtConsole.ScrollToEnd()
         $LblStatus.Text = "Status: $Message"
     })
 }
 
+$allButtons = @(
+    $BtnTabDashboard,$BtnTabOptimizer,$BtnTabDisplayFix,$BtnTabSecurityApps,$BtnTabActivation,
+    $BtnQuickBoost,$BtnDisableWU,$BtnEnableWU,$BtnCleanTemp,$BtnUltimatePower,
+    $BtnCreateRestore,$BtnResetGpu,$BtnClearDispCache,$BtnDefenderScan,
+    $BtnScanBloatware,$BtnUninstallBloatware,$BtnStartActivation
+)
+
 function Set-ControlsEnabled ($enabled) {
     $Window.Dispatcher.Invoke([Action]{
-        @($BtnTabDashboard,$BtnTabOptimizer,$BtnTabDisplayFix,$BtnTabSecurityApps,
-          $BtnTabActivation,$BtnQuickBoost,$BtnDisableWU,$BtnEnableWU,$BtnCleanTemp,
-          $BtnUltimatePower,$BtnCreateRestore,$BtnResetGpu,$BtnClearDispCache,
-          $BtnDefenderScan,$BtnScanBloatware,$BtnUninstallBloatware,$BtnStartActivation) |
-        ForEach-Object { $_.IsEnabled = $enabled }
+        foreach ($btn in $allButtons) { $btn.IsEnabled = $enabled }
     })
 }
 
-$syncHash = [hashtable]::Synchronized(@{ Window=$Window; TxtConsole=$TxtConsole; LblStatus=$LblStatus })
-
 # ============================
 # 10. BACKGROUND TASK ENGINE
+#     Uses InitialSessionState to properly share functions with runspaces
 # ============================
+$script:RunspaceFunctionNames = @(
+    'Set-RestorePoint','Disable-WindowsUpdate','Enable-WindowsUpdate',
+    'Clear-TempFiles','Optimize-PowerPlan','Reset-GraphicsStack','Clean-GraphicsRegistry',
+    'Start-DefenderScan','Get-BloatwareStatus','Remove-Bloatware',
+    'Get-ActivationStatus','Start-WindowsActivation','Invoke-HWIDActivation','Invoke-KMSActivation'
+)
 
-# Semua fungsi modul yang dibutuhkan di dalam runspace – sebagai string literal
-$moduleFunctionsBlock = @'
-function Set-RestorePoint { [CmdletBinding()] param()
-    process { try { Enable-ComputerRestore -Drive "C:\" -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description "Win11Opt_BeforeTweak" -RestorePointType MODIFY_SETTINGS -Confirm:$false
-        Write-Verbose "Restore Point dibuat!"; return $true } catch { Write-Error "Gagal: $_"; return $false } } }
+function New-TaskRunspace {
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 
-function Disable-WindowsUpdate { [CmdletBinding()] param()
-    process { foreach ($s in @("wuauserv","UsoSvc","bits")) { try {
-        if (Get-Service $s -EA SilentlyContinue) { Stop-Service $s -Force; Set-Service $s -StartupType Disabled }
-    } catch { Write-Error "Gagal stop $s: $_" } }
-    $p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-    @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate",$p) | % { if (!(Test-Path $_)) { New-Item $_ -Force | Out-Null } }
-    try { Set-ItemProperty -Path $p -Name NoAutoUpdate -Value 1 -Type DWord -Force; return $true }
-    catch { Write-Error "Registry: $_"; return $false } } }
-
-function Enable-WindowsUpdate { [CmdletBinding()] param()
-    process { $p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-    if (Test-Path $p) { try { Remove-ItemProperty $p NoAutoUpdate -EA SilentlyContinue } catch { Set-ItemProperty $p NoAutoUpdate 0 -Type DWord -Force -EA SilentlyContinue } }
-    foreach ($s in @("wuauserv","UsoSvc","bits")) { try {
-        if (Get-Service $s -EA SilentlyContinue) { Set-Service $s -StartupType Automatic; Start-Service $s } } catch { Write-Error "Gagal start $s: $_" } }
-    return $true } }
-
-function Clear-TempFiles { [CmdletBinding()] param()
-    process { $c=0;$b=0
-    @("$env:SystemRoot\Temp\*","$env:TEMP\*","$env:SystemRoot\Prefetch\*") | % { $path=$_
-        Get-ChildItem $path -Recurse -File -EA SilentlyContinue | % { try{$b+=$_.Length;Remove-Item $_.FullName -Force -Recurse;$c++}catch{} }
-        Get-ChildItem $path -Recurse -Directory -EA SilentlyContinue | Sort FullName -Desc | % { try{Remove-Item $_.FullName -Force -EA SilentlyContinue}catch{} } }
-    $mb=[Math]::Round($b/1MB,2); Write-Verbose "Selesai: $c file, $mb MB."; return [PSCustomObject]@{Success=$true;DeletedCount=$c;FreedSpaceMB=$mb} } }
-
-function Optimize-PowerPlan { [CmdletBinding()] param()
-    process { try { $g="e9a42b02-d5df-448d-aa00-03f14749eb61"
-        if ((powercfg -list) -notmatch $g) { powercfg -duplicatescheme $g | Out-Null }
-        powercfg -setactive $g; Write-Verbose "Ultimate Performance aktif."; return $true }
-    catch { Write-Error "Gagal: $_"; return $false } } }
-
-function Reset-GraphicsStack { [CmdletBinding()] param()
-    process { $ok=$false
-    try { Get-PnpDevice -ClassName Display -Status OK | % { Disable-PnpDevice $_.InstanceId -Confirm:$false; Start-Sleep -Ms 500; Enable-PnpDevice $_.InstanceId -Confirm:$false }; $ok=$true } catch { Write-Warning "PnpDevice gagal: $_" }
-    try { Stop-Process dwm -Force; $ok=$true } catch { Write-Error "DWM gagal: $_" }; return $ok } }
-
-function Clean-GraphicsRegistry { [CmdletBinding()] param()
-    process { $c=0
-    @("HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration",
-      "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Connectivity",
-      "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\ScaleFactors") | % {
-        if (Test-Path $_) { Get-ChildItem $_ -EA SilentlyContinue | % { try{Remove-Item $_.PSPath -Recurse -Force;$c++}catch{} } } }
-    Write-Verbose "$c entri dihapus."; return ($c -gt 0) } }
-
-function Start-DefenderScan { [CmdletBinding()] param()
-    process { try { if (Get-Command Start-MpScan -EA SilentlyContinue) { Start-MpScan -ScanType QuickScan; return $true }
-    else { $e=(Resolve-Path "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -EA SilentlyContinue)
-        if($e){$p=Start-Process $e.Path "-Scan -ScanType 1" -NoNewWindow -PassThru -Wait; return ($p.ExitCode -in @(0,2))}
-        else{throw "Defender CLI tidak ditemukan"} } } catch { Write-Error "Scan gagal: $_"; return $false } } }
-
-$global:BloatwareMap = [ordered]@{
-    "Cortana"="Microsoft.549981C3F5F10";"Xbox Suite"="Microsoft.Xbox*";"Skype"="Microsoft.SkypeApp"
-    "Movies & TV"="Microsoft.ZuneVideo";"Groove Music"="Microsoft.ZuneMusic"
-    "Office Hub"="Microsoft.MicrosoftOfficeHub";"Solitaire"="Microsoft.MicrosoftSolitaireCollection"
-    "Feedback Hub"="Microsoft.WindowsFeedbackHub";"Mixed Reality"="Microsoft.MixedReality.Portal"
-    "Sticky Notes"="Microsoft.MicrosoftStickyNotes";"Windows Maps"="Microsoft.WindowsMaps"
-    "Phone Link"="Microsoft.YourPhone";"MSN Weather"="Microsoft.BingWeather"
-    "MSN News"="Microsoft.BingNews";"MSN Sports"="Microsoft.BingSports"
-    "Paint 3D"="Microsoft.MSPaint";"3D Viewer"="Microsoft.Microsoft3DViewer"
-    "Windows People"="Microsoft.People";"OneNote"="Microsoft.Office.OneNote"
-    "Get Help"="Microsoft.GetHelp";"Mail & Calendar"="Microsoft.windowscommunicationsapps"
-    "Clipchamp"="Clipchamp.Clipchamp"
-}
-
-function Get-BloatwareStatus { [CmdletBinding()] param()
-    process { try { $inst=Get-AppxPackage -AllUsers | Select -ExpandProperty Name
-        $r=[System.Collections.Generic.List[PSCustomObject]]::new()
-        foreach ($k in $global:BloatwareMap.Keys) { $p=$global:BloatwareMap[$k]; $f=$inst|Where{$_ -like $p}
-            $r.Add([PSCustomObject]@{DisplayName=$k;PackageName=$p;Type="UWP";Installed=[bool]$f}) }
-        $od=$false; if((Test-Path "$env:SystemRoot\SysWOW64\OneDriveSetup.exe")-or(Test-Path "$env:SystemRoot\System32\OneDriveSetup.exe")){
-            $od=(Get-Process OneDrive -EA SilentlyContinue)-or(Test-Path "$env:LocalAppData\Microsoft\OneDrive\OneDrive.exe") }
-        $r.Add([PSCustomObject]@{DisplayName="Microsoft OneDrive";PackageName="OneDrive";Type="Win32";Installed=$od})
-        return $r } catch { Write-Error "Scan gagal: $_"; return @() } } }
-
-function Remove-Bloatware { [CmdletBinding()] param([PSCustomObject[]]$AppsToUninstall)
-    process { $ok=0;$fail=0; foreach ($a in $AppsToUninstall) { Write-Verbose "Hapus: $($a.DisplayName)"
-        if ($a.PackageName -eq "OneDrive") { try {
-            Stop-Process OneDrive -Force -EA SilentlyContinue; Start-Sleep 1
-            if(Test-Path "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"){Start-Process "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" /uninstall -NoNewWindow -Wait}
-            elseif(Test-Path "$env:SystemRoot\System32\OneDriveSetup.exe"){Start-Process "$env:SystemRoot\System32\OneDriveSetup.exe" /uninstall -NoNewWindow -Wait}
-            $ok++ } catch { Write-Error "OneDrive gagal: $_"; $fail++ }
-        } else { try { Get-AppxPackage -AllUsers | Where{$_.Name -like $a.PackageName} |
-            %{Remove-AppxPackage $_.PackageFullName -AllUsers}; $ok++ } catch { Write-Error "$($a.DisplayName) gagal: $_"; $fail++ } } }
-    return [PSCustomObject]@{SuccessCount=$ok;FailCount=$fail} } }
-
-$global:KeyDatabase = [ordered]@{
-    "Home"=@{Key="TX9XD-98N7V-6WMQ6-BX7FG-H8Q99";Method="HWID"};"Pro"=@{Key="VK7JG-NPHTM-C97JM-9MPGT-3V66T";Method="HWID"}
-    "Education"=@{Key="YNMGQ-8RYV3-4PGQ3-C8XTP-7CFBY";Method="HWID"};"Enterprise"=@{Key="XGVPP-NMH47-7TTHJ-W3FW7-8DEC8";Method="HWID"}
-    "EnterpriseS"=@{Key="M7XTQ-FN8P6-TTKYV-9D4CC-J46GB";Method="HWID"}
-    "Server 2022 Standard"=@{Key="VDYBN-27WMT-V348H-WJ7WS-T628W";Method="KMS"}
-    "Server 2019 Standard"=@{Key="N69G4-B83C2-QT9QP-WRX9B-PFQJH";Method="KMS"}
-    "Server 2016 Standard"=@{Key="WC2BQ-8NRM3-FDDYY-2BFGV-KCHQY";Method="KMS"}
-}
-
-function Get-ActivationStatus { [CmdletBinding()] param()
-    process { try { $os=Get-CimInstance Win32_OperatingSystem
-        $lic=Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' and PartialProductKey is not null" -EA SilentlyContinue
-        $s="Belum Teraktivasi";$a=$false
-        if($lic){switch($lic.LicenseStatus){1{$s="Teraktivasi (Permanen)";$a=$true}2{$s="Grace OOB"}3{$s="Grace OOT"}5{$s="Notifikasi"}default{$s="Belum Aktif"}}}
-        return [PSCustomObject]@{Edition=$os.Caption;Version=$os.Version;Status=$s;IsActivated=$a}
-    } catch { return $null } } }
-
-function Start-WindowsActivation { [CmdletBinding()] param()
-    process { $stat=Get-ActivationStatus; if(!$stat){Write-Error "Gagal baca OS";return $false}
-    $key=$null;$mth=$null
-    foreach($k in $global:KeyDatabase.Keys){if($stat.Edition -like "*$k*"){$key=$global:KeyDatabase[$k].Key;$mth=$global:KeyDatabase[$k].Method;break}}
-    if(!$key){if($stat.Edition -like "*Server*"){$key=$global:KeyDatabase["Server 2022 Standard"].Key;$mth="KMS"}else{$key=$global:KeyDatabase["Pro"].Key;$mth="HWID"}}
-    Write-Verbose "Metode: $mth | Key: $key"
-    try { $svc=Get-CimInstance SoftwareLicensingService; $svc|Invoke-CimMethod InstallProductKey -Arguments @{ProductKey=$key} } catch { Write-Error "Key gagal: $_"; return $false }
-    if($mth -eq "HWID"){
-        $td="$env:TEMP\Win11OptAct"; if(!(Test-Path $td)){New-Item -ItemType Directory $td -Force|Out-Null}
-        $exe="$td\gatherosstate.exe"; $tix="$td\GenuineTicket.xml"; if(Test-Path $tix){Remove-Item $tix -Force}
-        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-        try{(New-Object Net.WebClient).DownloadFile("https://github.com/massgravel/Microsoft-Activation-Scripts/raw/main/MAS/All-In-One-Version-KL/bin/gatherosstate.exe",$exe)}catch{Write-Error "DL gagal: $_";return $false}
-        try{$p=Start-Process $exe -WorkingDirectory $td -NoNewWindow -PassThru -Wait;if($p.ExitCode -ne 0){throw "Exit: $($p.ExitCode)"}}catch{Write-Error "Tiket gagal: $_";return $false}
-        if(!(Test-Path $tix)){Write-Error "GenuineTicket tidak ada";return $false}
-        $cs="$env:ProgramData\Microsoft\Windows\ClipSVC\GenuineTicket"; if(!(Test-Path $cs)){New-Item -ItemType Directory $cs -Force|Out-Null}
-        try{Copy-Item $tix "$cs\GenuineTicket.xml" -Force}catch{Write-Error "Copy tiket gagal: $_";return $false}
-        try{Restart-Service ClipSVC -Force;Start-Sleep 2}catch{}
-        try{(Get-CimInstance SoftwareLicensingService)|Invoke-CimMethod RefreshLicenseStatus -EA SilentlyContinue
-            Start-Process cscript "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-            $f=Get-ActivationStatus; if($f.IsActivated){Write-Verbose "TERAKTIVASI PERMANEN!";return $true}
-            else{Write-Error "Belum aktif pasca proses";return $false}}catch{Write-Error "Aktivasi: $_";return $false}
-        finally{Remove-Item $td -Recurse -Force -EA SilentlyContinue}
-    } else {
-        try{$svc=Get-CimInstance SoftwareLicensingService;$svc|Invoke-CimMethod SetKeyManagementServiceMachine -Arguments @{Name="kms8.msguides.com"}
-            Start-Process cscript "//nologo $env:SystemRoot\system32\slmgr.vbs /ato" -NoNewWindow -Wait
-            $f=Get-ActivationStatus;if($f.IsActivated){Write-Verbose "KMS OK";return $true}else{Write-Error "KMS gagal";return $false}
-        }catch{Write-Error "KMS error: $_";return $false}
-    } } }
-'@
-
-$commonHeader = [ScriptBlock]::Create(@"
-    param(`$sync, `$ignored)
-    function Write-Log (`$msg, `$lvl = "Info") {
-        `$sync.Window.Dispatcher.Invoke([Action]{
-            `$ts = Get-Date -Format "HH:mm:ss"
-            `$sync.TxtConsole.AppendText("[`$ts] [`$lvl] `$msg``r``n")
-            `$sync.TxtConsole.ScrollToEnd()
-            `$sync.LblStatus.Text = "Status: `$msg"
-        })
-    }
-    function Run-CommandWithStreaming { param([ScriptBlock]`$cmd)
-        `$out = & `$cmd *>&1
-        foreach (`$item in `$out) {
-            if (`$item -is [System.Management.Automation.VerboseRecord])  { Write-Log `$item.Message "Info" }
-            elseif (`$item -is [System.Management.Automation.WarningRecord]) { Write-Log `$item.Message "Warning" }
-            elseif (`$item -is [System.Management.Automation.ErrorRecord])  { Write-Log `$item.Exception.Message "Error" }
-            elseif (`$item -is [string]) { Write-Log `$item "Info" }
+    # Import all module functions into the runspace
+    foreach ($name in $script:RunspaceFunctionNames) {
+        $fn = Get-Item "Function:\$name" -ErrorAction SilentlyContinue
+        if ($fn) {
+            $entry = New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($name, $fn.Definition)
+            $iss.Commands.Add($entry)
         }
     }
-    $moduleFunctionsBlock
-"@)
+
+    # Import global variables (BloatwareMap, KeyDatabase, syncHash)
+    $vars = @(
+        [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new('BloatwareMap', $global:BloatwareMap, $null),
+        [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new('KeyDatabase',  $global:KeyDatabase,  $null),
+        [System.Management.Automation.Runspaces.SessionStateVariableEntry]::new('syncHash',     $syncHash,            $null)
+    )
+    foreach ($v in $vars) { $iss.Variables.Add($v) }
+
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    return $rs
+}
 
 function Invoke-BackgroundTask {
     param(
-        [Parameter(Mandatory=$true)][ScriptBlock]$ScriptBlock,
+        [Parameter(Mandatory=$true)][ScriptBlock]$Task,
         [Parameter(Mandatory=$false)][ScriptBlock]$OnComplete = $null,
         [Parameter(Mandatory=$false)][Object[]]$Arguments = @()
     )
     Set-ControlsEnabled $false
     $ProgressMain.IsIndeterminate = $true
+
+    $rs = New-TaskRunspace
+
     $ps = [PowerShell]::Create()
-    $ps.AddScript($ScriptBlock)      | Out-Null
-    $ps.AddArgument($syncHash)       | Out-Null
-    $ps.AddArgument($null)           | Out-Null  # placeholder modulesDir (tidak dipakai)
+    $ps.Runspace = $rs
+
+    # Inject Write-Log and Run-CommandWithStreaming helpers into the runspace
+    $ps.AddScript({
+        function Write-Log ($msg, $lvl = "Info") {
+            $syncHash.Window.Dispatcher.Invoke([Action]{
+                $ts = Get-Date -Format "HH:mm:ss"
+                $syncHash.TxtConsole.AppendText("[$ts] [$lvl] $msg`r`n")
+                $syncHash.TxtConsole.ScrollToEnd()
+                $syncHash.LblStatus.Text = "Status: $msg"
+            })
+        }
+        function Run-CommandWithStreaming ([ScriptBlock]$cmd) {
+            $out = & $cmd *>&1
+            foreach ($item in $out) {
+                if     ($item -is [System.Management.Automation.VerboseRecord])  { Write-Log $item.Message "Info"    }
+                elseif ($item -is [System.Management.Automation.WarningRecord])  { Write-Log $item.Message "Warning" }
+                elseif ($item -is [System.Management.Automation.ErrorRecord])    { Write-Log $item.Exception.Message "Error" }
+                elseif ($item -is [string])                                       { Write-Log $item "Info" }
+            }
+        }
+    }) | Out-Null
+    $ps.Invoke() | Out-Null
+    $ps.Commands.Clear()
+
+    # Add the actual task
+    $ps.AddScript($Task) | Out-Null
     foreach ($arg in $Arguments) { $ps.AddArgument($arg) | Out-Null }
-    $asyncResult = $ps.BeginInvoke({
+
+    # Capture outer variables for the callback closure
+    $capturedOnComplete = $OnComplete
+    $capturedSyncHash   = $syncHash
+
+    $ps.BeginInvoke({
         param($ar)
         $psi = $ar.AsyncState
         $res = $null
-        try   { $res = $psi.EndInvoke($ar) }
-        catch { $syncHash.Window.Dispatcher.Invoke([Action]{ $TxtConsole.AppendText("[ERROR] $_`r`n") }) }
-        $syncHash.Window.Dispatcher.Invoke([Action]{
-            if ($OnComplete) { & $OnComplete $res }
+        try { $res = $psi.EndInvoke($ar) }
+        catch {
+            $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
+                $capturedSyncHash.TxtConsole.AppendText("[ERROR] $($_.Exception.Message)`r`n")
+            })
+        }
+        $capturedSyncHash.Window.Dispatcher.Invoke([Action]{
+            if ($capturedOnComplete) { & $capturedOnComplete $res }
             Set-ControlsEnabled $true
             $ProgressMain.IsIndeterminate = $false
             $ProgressMain.Value = 100
         })
         $psi.Dispose()
-    }, $ps)
+        $rs.Close()
+    }, $ps) | Out-Null
 }
 
 # ============================
@@ -1213,9 +1082,9 @@ function Refresh-ActivationUI {
     try {
         $act = Get-ActivationStatus
         if ($act) {
-            $LblActOsName.Text  = $act.Edition
+            $LblActOsName.Text    = $act.Edition
             $LblActOsVersion.Text = "Build: $($act.Version)"
-            $LblActStatus.Text  = $act.Status
+            $LblActStatus.Text    = $act.Status
             $LblActStatus.Foreground = if ($act.IsActivated) {
                 [System.Windows.Media.Brushes]::LimeGreen
             } else {
@@ -1227,7 +1096,9 @@ function Refresh-ActivationUI {
                 "Metode: Digital License (HWID)"
             }
         }
-    } catch { Write-ToConsole "Gagal refresh status aktivasi: $_" "Error" }
+    } catch {
+        Write-ToConsole "Gagal refresh status aktivasi: $($_.Exception.Message)" "Error"
+    }
 }
 
 # ============================
@@ -1235,7 +1106,7 @@ function Refresh-ActivationUI {
 # ============================
 $BtnQuickBoost.Add_Click({
     Write-ToConsole "Memulai Quick Boost..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + @'
+    Invoke-BackgroundTask -Task {
         Write-Log "Langkah 1: Membuat Restore Point..."
         Run-CommandWithStreaming { Set-RestorePoint -Verbose }
         Write-Log "Langkah 2: Mengaktifkan Ultimate Performance..."
@@ -1243,68 +1114,77 @@ $BtnQuickBoost.Add_Click({
         Write-Log "Langkah 3: Membersihkan file sementara..."
         Run-CommandWithStreaming { Clear-TempFiles -Verbose }
         Write-Log "Quick Boost selesai!" "Info"
-'@)
-    Invoke-BackgroundTask -ScriptBlock $sb
+    }
 })
 
 $BtnDisableWU.Add_Click({
     Write-ToConsole "Menonaktifkan Windows Update..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Disable-WindowsUpdate -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Disable-WindowsUpdate -Verbose }
+    }
 })
 
 $BtnEnableWU.Add_Click({
     Write-ToConsole "Mengaktifkan Windows Update..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Enable-WindowsUpdate -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Enable-WindowsUpdate -Verbose }
+    }
 })
 
 $BtnCleanTemp.Add_Click({
     Write-ToConsole "Membersihkan Temp Files..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Clear-TempFiles -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Clear-TempFiles -Verbose }
+    }
 })
 
 $BtnUltimatePower.Add_Click({
     Write-ToConsole "Mengaktifkan Ultimate Performance..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Optimize-PowerPlan -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Optimize-PowerPlan -Verbose }
+    }
 })
 
 $BtnCreateRestore.Add_Click({
     Write-ToConsole "Membuat System Restore Point..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Set-RestorePoint -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Set-RestorePoint -Verbose }
+    }
 })
 
 $BtnResetGpu.Add_Click({
     Write-ToConsole "Mereset driver grafis..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Reset-GraphicsStack -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Reset-GraphicsStack -Verbose }
+    }
 })
 
 $BtnClearDispCache.Add_Click({
     Write-ToConsole "Membersihkan cache registry monitor..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Clean-GraphicsRegistry -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Clean-GraphicsRegistry -Verbose }
+    }
 })
 
 $BtnDefenderScan.Add_Click({
     Write-ToConsole "Memulai Windows Defender Quick Scan..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Start-DefenderScan -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Start-DefenderScan -Verbose }
+    }
 })
 
 $BtnScanBloatware.Add_Click({
     Write-ToConsole "Memindai bloatware terinstal..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Get-BloatwareStatus')
-    Invoke-BackgroundTask -ScriptBlock $sb -OnComplete {
+    Invoke-BackgroundTask -Task {
+        Write-Log "Mengambil daftar aplikasi terinstal..."
+        return Get-BloatwareStatus
+    } -OnComplete {
         param($results)
         $StackBloatware.Children.Clear()
         $count = 0
         foreach ($app in $results) {
             if ($app.Installed) {
-                $cb = New-Object System.Windows.Controls.CheckBox
+                $cb            = New-Object System.Windows.Controls.CheckBox
                 $cb.Content    = "$($app.DisplayName) ($($app.Type))"
                 $cb.Tag        = $app
                 $cb.Margin     = "5,5,5,5"
@@ -1315,11 +1195,11 @@ $BtnScanBloatware.Add_Click({
             }
         }
         if ($count -eq 0) {
-            $LblBloatwareCount.Text = "Tidak ditemukan bloatware terinstal!"
-            Write-ToConsole "Sistem bersih dari bloatware." "Info"
+            $LblBloatwareCount.Text = "Tidak ditemukan bloatware terinstal. Sistem bersih!"
+            Write-ToConsole "Scan selesai. Tidak ada bloatware." "Info"
         } else {
             $LblBloatwareCount.Text = "Ditemukan $count aplikasi bloatware."
-            Write-ToConsole "Ditemukan $count bloatware terinstal." "Info"
+            Write-ToConsole "Scan selesai. Ditemukan $count bloatware." "Info"
         }
     }
 })
@@ -1327,13 +1207,18 @@ $BtnScanBloatware.Add_Click({
 $BtnUninstallBloatware.Add_Click({
     $selected = [System.Collections.Generic.List[PSCustomObject]]::new()
     $StackBloatware.Children | Where-Object { $_.IsChecked } | ForEach-Object { $selected.Add($_.Tag) }
-    if ($selected.Count -eq 0) { Write-ToConsole "Pilih setidaknya satu aplikasi." "Info"; return }
+    if ($selected.Count -eq 0) {
+        Write-ToConsole "Pilih setidaknya satu aplikasi terlebih dahulu." "Info"
+        return
+    }
     Write-ToConsole "Menghapus $($selected.Count) aplikasi terpilih..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + @'
-        param($sync2, $ign, $apps)
-        Run-CommandWithStreaming { Remove-Bloatware -AppsToUninstall $apps -Verbose }
-'@)
-    Invoke-BackgroundTask -ScriptBlock $sb -Arguments @(,$selected) -OnComplete {
+    $appsToPass = $selected.ToArray()
+    Invoke-BackgroundTask -Task {
+        param($apps)
+        Write-Log "Memulai penghapusan $($apps.Count) aplikasi..."
+        $r = Remove-Bloatware -AppsToUninstall $apps
+        Write-Log "Penghapusan selesai. Berhasil: $($r.SuccessCount), Gagal: $($r.FailCount)"
+    } -Arguments @(,$appsToPass) -OnComplete {
         Write-ToConsole "Penghapusan selesai. Memindai ulang..." "Info"
         $BtnScanBloatware.RaiseEvent((New-Object System.Windows.RoutedEventArgs ([System.Windows.Controls.Button]::ClickEvent)))
     }
@@ -1341,8 +1226,9 @@ $BtnUninstallBloatware.Add_Click({
 
 $BtnStartActivation.Add_Click({
     Write-ToConsole "Memulai proses aktivasi Windows..."
-    $sb = [ScriptBlock]::Create($commonHeader.ToString() + 'Run-CommandWithStreaming { Start-WindowsActivation -Verbose }')
-    Invoke-BackgroundTask -ScriptBlock $sb -OnComplete {
+    Invoke-BackgroundTask -Task {
+        Run-CommandWithStreaming { Start-WindowsActivation -Verbose }
+    } -OnComplete {
         Refresh-ActivationUI
         Write-ToConsole "Proses aktivasi selesai." "Info"
     }
@@ -1356,10 +1242,10 @@ $timer.Interval = [TimeSpan]::FromSeconds(2)
 $timer.Add_Tick({
     try {
         $cpu = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -EA SilentlyContinue).PercentProcessorTime
-        $ProgCpu.Value  = $cpu; $LblCpuVal.Text = "$cpu%"
-        $osM = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
-        if ($osM) {
-            $ram = [Math]::Round((($osM.TotalVisibleMemorySize - $osM.FreePhysicalMemory) / $osM.TotalVisibleMemorySize) * 100, 0)
+        if ($null -ne $cpu) { $ProgCpu.Value = $cpu; $LblCpuVal.Text = "$cpu%" }
+        $osm = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
+        if ($osm) {
+            $ram = [Math]::Round((($osm.TotalVisibleMemorySize - $osm.FreePhysicalMemory) / $osm.TotalVisibleMemorySize) * 100, 0)
             $ProgRam.Value = $ram; $LblRamVal.Text = "$ram%"
         }
     } catch {}
@@ -1370,11 +1256,9 @@ $Window.Add_Loaded({
     Refresh-ActivationUI
     Write-ToConsole "Aplikasi berhasil dimuat. Selamat menggunakan Windows All-in-One Utility!" "Info"
 })
-
 $Window.Add_Closed({ $timer.Stop() })
 
 # ============================
 # 14. SHOW WINDOW
 # ============================
-Write-ToConsole "Memulai antarmuka Windows All-in-One Utility..."
 $Window.ShowDialog() | Out-Null
