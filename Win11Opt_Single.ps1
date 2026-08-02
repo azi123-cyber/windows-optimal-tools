@@ -643,7 +643,7 @@ function Start-KMSOnlyActivation {
 [xml]$xamlContent = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Windows System Utility" Height="700" Width="1000"
+        Title="Arthea Smart Control" Height="700" Width="1000"
         WindowStartupLocation="CenterScreen" ResizeMode="CanMinimize"
         Background="#202020" Foreground="#FFFFFF"
         FontFamily="Segoe UI Variable, Segoe UI, Arial">
@@ -745,26 +745,30 @@ function Start-KMSOnlyActivation {
     </Window.Resources>
     
     <Grid>
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="250"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
-        
-        <!-- SIDEBAR -->
-        <Grid Grid.Column="0" Background="#181818">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="80"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="120"/>
-            </Grid.RowDefinitions>
+        <!-- MAIN APP CONTENT (Initially hidden for startup splash screen) -->
+        <Grid Name="MainAppPanel" Visibility="Hidden">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
             
-            <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
-                <TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="22" VerticalAlignment="Center" Foreground="#0078D4"/>
-                <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Text="System Utility" FontWeight="SemiBold" FontSize="16" Foreground="#FFFFFF"/>
-                    <TextBlock Text="Windows Optimization" FontSize="12" Foreground="#888888"/>
+            <!-- SIDEBAR -->
+            <Grid Grid.Column="0" Background="#181818">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="80"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="120"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+                    <Image Source="https://raw.githubusercontent.com/azi123-cyber/windows-optimal-tools/main/src/lib/Proyek%20Baru%20121%20%5B60F37D0%5D.png" 
+                           Width="32" Height="32" VerticalAlignment="Center" 
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="Arthea" FontWeight="Bold" FontSize="16" Foreground="#FFFFFF"/>
+                        <TextBlock Text="Smart Control" FontSize="11" Foreground="#0078D4" FontWeight="SemiBold"/>
+                    </StackPanel>
                 </StackPanel>
-            </StackPanel>
             
             <StackPanel Grid.Row="1" Margin="0,10,0,0">
                 <Button Name="BtnTabDashboard" Style="{StaticResource SidebarTabButton}">
@@ -1138,6 +1142,45 @@ function Start-KMSOnlyActivation {
             </Border>
         </Grid>
     </Grid>
+
+    <!-- SPLASH SCREEN OVERLAY -->
+    <Grid Name="SplashScreen" Background="#121212">
+        <Grid.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#0F0F11" Offset="0"/>
+                <GradientStop Color="#18181E" Offset="1"/>
+            </LinearGradientBrush>
+        </Grid.Background>
+        
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+            <!-- Logo with modern border -->
+            <Border Width="110" Height="110" Background="#1C1C22" CornerRadius="20" BorderBrush="#2C2C35" BorderThickness="1" Margin="0,0,0,25">
+                <Image Source="https://raw.githubusercontent.com/azi123-cyber/windows-optimal-tools/main/src/lib/Proyek%20Baru%20121%20%5B60F37D0%5D.png" 
+                       Width="80" Height="80" VerticalAlignment="Center" HorizontalAlignment="Center"
+                       RenderOptions.BitmapScalingMode="HighQuality"/>
+            </Border>
+            
+            <!-- App Title -->
+            <TextBlock Text="ARTHEA SMART CONTROL" 
+                       FontSize="24" FontWeight="Bold" FontFamily="Segoe UI Variable Display, Segoe UI, Arial"
+                       Foreground="#FFFFFF" HorizontalAlignment="Center" Margin="0,0,0,5"/>
+                       
+            <!-- Subtitle -->
+            <TextBlock Text="Smart Windows Optimization Suite" 
+                       FontSize="12" Foreground="#0078D4" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" Margin="0,0,0,35"/>
+            
+            <!-- Smooth Progress Bar -->
+            <ProgressBar Name="SplashProgress" Width="200" Height="4" 
+                         Background="#22222E" Foreground="#0078D4" BorderThickness="0" 
+                         IsIndeterminate="True" Margin="0,0,0,12"/>
+            
+            <!-- Status text -->
+            <TextBlock Name="LblSplashStatus" Text="Initializing system resources..." 
+                       FontSize="11" Foreground="#666677" HorizontalAlignment="Center" FontFamily="Consolas"/>
+        </StackPanel>
+    </Grid>
+</Grid>
 </Window>
 '@
 
@@ -1486,6 +1529,9 @@ $BtnCancelTask.Add_Click({
     if ($global:CurrentPowerShell) {
         Write-ToConsole "Membatalkan proses saat ini... Harap tunggu." "WARN"
         try {
+            # Hentikan paksa proses anak (seperti cscript/slmgr/gatherosstate) agar tidak memblokir thread
+            Stop-Process -Name "cscript", "gatherosstate" -Force -ErrorAction SilentlyContinue
+            
             $global:CurrentPowerShell.Stop()
         } catch {
             Write-ToConsole "Gagal membatalkan proses: $($_.Exception.Message)" "ERROR"
@@ -1513,11 +1559,51 @@ $timer.Add_Tick({
 $Window.Add_Loaded({
     $timer.Start()
     Refresh-ActivationUI
-    Write-ToConsole "Application loaded successfully. Welcome!" "INFO"
+    
+    # Simpan status pemuatan awal
+    $taskTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $taskTimer.Interval = [TimeSpan]::FromSeconds(2.0)
+    $taskTimer.Add_Tick({
+        $taskTimer.Stop()
+        
+        # Buat animasi Fade-Out untuk Splash Screen
+        $fadeOut = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $fadeOut.From = 1.0
+        $fadeOut.To = 0.0
+        $fadeOut.Duration = [System.Windows.Duration][TimeSpan]::FromSeconds(0.6)
+        
+        $fadeOut.add_Completed({
+            $SplashScreen.Visibility = [System.Windows.Visibility]::Collapsed
+            $MainAppPanel.Visibility = [System.Windows.Visibility]::Visible
+            
+            # Buat animasi Fade-In untuk Main Panel
+            $fadeIn = New-Object System.Windows.Media.Animation.DoubleAnimation
+            $fadeIn.From = 0.0
+            $fadeIn.To = 1.0
+            $fadeIn.Duration = [System.Windows.Duration][TimeSpan]::FromSeconds(0.4)
+            $MainAppPanel.BeginAnimation([System.Windows.Controls.Grid]::OpacityProperty, $fadeIn)
+        })
+        
+        $SplashScreen.BeginAnimation([System.Windows.Controls.Grid]::OpacityProperty, $fadeOut)
+        Write-ToConsole "Arthea Smart Control siap digunakan. Selamat bekerja!" "INFO"
+    }.GetNewClosure())
+    $taskTimer.Start()
 })
 $Window.Add_Closed({ $timer.Stop() })
 
 # ============================
-# 14. SHOW WINDOW
+# 14. SHOW WINDOW & AUTO-RELOAD LOOP
 # ============================
 $Window.ShowDialog() | Out-Null
+
+# Auto-reload loop: ketika GUI ditutup, otomatis ambil kode terbaru dari GitHub dan jalankan ulang
+Write-Host "Menyegarkan Arthea Smart Control..."
+$url = "https://raw.githubusercontent.com/azi123-cyber/windows-optimal-tools/main/Win11Opt_Single.ps1?t=$(Get-Date -UFormat %s)"
+try {
+    $code = (New-Object System.Net.WebClient).DownloadString($url)
+    if ($code) {
+        Invoke-Expression $code
+    }
+} catch {
+    Write-Host "Gagal mengambil pembaruan otomatis (Offline). Menutup aplikasi."
+}
