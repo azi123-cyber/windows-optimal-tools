@@ -576,14 +576,14 @@ function Start-WindowsActivation {
             <Setter Property="Background" Value="#005FB8"/>
             <Setter Property="BorderBrush" Value="#005FB8"/>
             <Setter Property="Foreground" Value="#FFFFFF"/>
-            <ControlTemplate.Triggers>
+            <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#0078D4"/>
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
                     <Setter Property="Background" Value="#004A90"/>
                 </Trigger>
-            </ControlTemplate.Triggers>
+            </Style.Triggers>
         </Style>
 
         <!-- Card Container Style -->
